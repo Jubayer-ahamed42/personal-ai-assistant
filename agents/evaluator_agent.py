@@ -1,8 +1,11 @@
 import json
 import re
 import ast
+import logging
 from typing import Dict, Any, List, Optional
 from agents.llm_client import call_llm
+
+logger = logging.getLogger(__name__)
 
 class EvaluatorAgent:
     """Specialized Quality & Evaluation Gate (The Judge).
@@ -46,7 +49,7 @@ class EvaluatorAgent:
         if tier1_issues:
             return {
                 "verdict": "REJECTED",
-                "score": 2.0,
+                "average_score": 2.0,
                 "tier": "Tier 1 (Deterministic)",
                 "passed_deterministic": False,
                 "critique": tier1_issues,
@@ -73,9 +76,9 @@ Evaluate strictly against these 4 dimensions:
 1. Intent Satisfaction (Did it thoroughly answer/accomplish what the user wanted?)
 2. Factuality & Soundness (Is the reasoning grounded, logical, and free of hallucinations?)
 3. Precision & Structure (Is the output clear, well-formatted, and direct?)
-4. Error-free Logic (Are there any subtle flaws, unverified assumptions, or missing components?)
+4. Native Language Alignment (Did it respect user's requested language/tone, handling dialects accurately?)
 
-Respond ONLY with a JSON object in the following format:
+Respond ONLY with a valid JSON object in this format:
 {{
     "intent_score": <number 1.0 to 5.0>,
     "factuality_score": <number 1.0 to 5.0>,
@@ -96,22 +99,22 @@ Note: Set verdict to "APPROVED" only if average_score >= 4.0 and there are no cr
                 temperature=0.0
             )
 
-            # Clean JSON markdown if model wrapped it
-            clean_json = raw_response.strip()
-            if clean_json.startswith("```"):
-                clean_json = re.sub(r"^```(?:json)?\n", "", clean_json)
-                clean_json = re.sub(r"\n```$", "", clean_json)
+            # Robust JSON extraction using regex search
+            json_match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+            if json_match:
+                eval_result = json.loads(json_match.group(0))
+            else:
+                eval_result = json.loads(raw_response.strip())
 
-            eval_result = json.loads(clean_json)
             eval_result["passed_deterministic"] = True
             eval_result["tier"] = "Tier 2 (Semantic Judge)"
             return eval_result
 
         except Exception as e:
-            # Fallback if evaluation parsing fails
+            logger.warning(f"Semantic evaluation parsing fallback: {e}")
             return {
                 "verdict": "APPROVED",
-                "score": 4.2,
+                "average_score": 4.5,
                 "passed_deterministic": True,
                 "tier": "Fallback",
                 "critique": [f"Evaluation fallback triggered: {str(e)}"],

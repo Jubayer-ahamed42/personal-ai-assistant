@@ -1,22 +1,26 @@
+import os
 import sys
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Dict, Any
 from config import SANDBOX_PATH
 
-# Forbidden destructive patterns (Pillar 1 & 4 from Whitepaper 4)
+# Forbidden destructive patterns (Pillars 1 & 4 from Whitepaper 4)
 DANGEROUS_PATTERNS = [
-    "shutil.rmtree('C:",
+    "shutil.rmtree('c:",
+    "shutil.rmtree(\"c:",
     "os.system('del",
+    "os.system(\"del",
     "os.system('format",
-    "subprocess.Popen(['rm",
+    "os.system(\"format",
+    "subprocess.popen(['rm",
+    "subprocess.popen([\"rm",
     "ctypes.windll",
 ]
 
 def execute_python_code(code: str, timeout: int = 15) -> Dict[str, Any]:
-    """Executes Python code in an isolated sandbox environment and captures outputs.
+    """Executes Python code in an isolated sandbox environment with UTF-8 encoding support and security bounds.
     
     Args:
         code: Python source code to execute.
@@ -30,21 +34,30 @@ def execute_python_code(code: str, timeout: int = 15) -> Dict[str, Any]:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": f"Security Violation: Execution blocked due to forbidden pattern '{pattern}'",
+                "stderr": f"Security Violation: Execution blocked due to dangerous pattern '{pattern}'",
                 "returncode": -1,
                 "execution_time_sec": 0.0
             }
 
     script_path = SANDBOX_PATH / f"run_{int(time.time() * 1000)}.py"
     try:
+        # Guarantee UTF-8 writing for native language and symbols
         script_path.write_text(code, encoding="utf-8")
         start_time = time.time()
+
+        # Enforce UTF-8 environment across Windows/Linux to prevent charmap/encoding crashes
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
 
         result = subprocess.run(
             [sys.executable, str(script_path)],
             cwd=str(SANDBOX_PATH),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
             timeout=timeout
         )
         elapsed = time.time() - start_time

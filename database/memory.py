@@ -13,8 +13,14 @@ class MemoryManager:
         self._init_db()
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False and 30s timeout to prevent multi-threaded Streamlit lock errors
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # Enable Write-Ahead Logging (WAL) for high concurrency
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
         return conn
 
     def _init_db(self):
@@ -90,8 +96,9 @@ class MemoryManager:
             if not cursor.fetchone():
                 default_rules = (
                     "- Be extremely accurate, rigorous, and fact-grounded.\n"
+                    "- Respond naturally in the user's spoken or preferred language (e.g. Bengali).\n"
+                    "- Understand colloquial language, regional terms, and variations without getting confused.\n"
                     "- Delegate domain-specific sub-tasks to specialized agents.\n"
-                    "- Every claim must be supported by sources or validated calculations.\n"
                     "- Always perform self-evaluation and fix errors before delivering the final report."
                 )
                 cursor.execute(
@@ -116,7 +123,18 @@ class MemoryManager:
             rows = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
             return [dict(r) for r in rows]
 
+    def ensure_session(self, session_id: str, default_title: str = "Active Session"):
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row:
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions (id, title) VALUES (?, ?)",
+                    (session_id, default_title)
+                )
+                conn.commit()
+
     def add_message(self, session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None):
+        self.ensure_session(session_id)
         msg_id = str(uuid.uuid4())
         meta_str = json.dumps(metadata or {})
         with self._get_connection() as conn:
@@ -160,6 +178,7 @@ class MemoryManager:
 
     # Trajectory & Audit Trails
     def create_trajectory(self, session_id: str, user_intent: str, plan: Dict[str, Any]) -> str:
+        self.ensure_session(session_id)
         traj_id = str(uuid.uuid4())
         with self._get_connection() as conn:
             conn.execute(

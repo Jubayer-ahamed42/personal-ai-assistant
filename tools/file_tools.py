@@ -3,17 +3,17 @@ from typing import List, Dict, Any, Optional
 from config import BASE_DIR, SANDBOX_PATH
 
 def _resolve_safe_path(rel_or_abs_path: str) -> Optional[Path]:
-    """Resolves path and guarantees it stays inside workspace or sandbox."""
-    path = Path(rel_or_abs_path)
-    if not path.is_absolute():
-        path = (SANDBOX_PATH / path).resolve()
-    else:
-        path = path.resolve()
-
+    """Resolves path and guarantees it strictly stays inside the sandbox or workspace."""
+    # Strip any leading slashes or backslashes to prevent Windows root drive escapes
+    clean_str = rel_or_abs_path.strip().lstrip("/\\")
+    
+    # If the user passed a path that starts relative to sandbox
+    target = (SANDBOX_PATH / clean_str).resolve()
+    
     # Safety boundary: only allow paths within BASE_DIR
     try:
-        path.relative_to(BASE_DIR.resolve())
-        return path
+        target.relative_to(BASE_DIR.resolve())
+        return target
     except ValueError:
         return None
 
@@ -47,7 +47,7 @@ def read_sandbox_file(filename: str) -> Dict[str, Any]:
 
 def list_sandbox_files(subdir: str = "") -> Dict[str, Any]:
     """Lists files inside the sandbox directory."""
-    target_dir = SANDBOX_PATH / subdir if subdir else SANDBOX_PATH
+    target_dir = SANDBOX_PATH / subdir.strip().lstrip("/\\") if subdir else SANDBOX_PATH
     safe_path = _resolve_safe_path(str(target_dir))
     if safe_path is None or not safe_path.exists():
         return {"success": False, "files": [], "error": "Invalid or non-existent directory"}

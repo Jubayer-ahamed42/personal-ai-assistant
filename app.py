@@ -1,4 +1,5 @@
 import os
+import hashlib
 import streamlit as st
 from config import SUPPORTED_MODELS, get_active_model
 from database.memory import MemoryManager
@@ -21,7 +22,6 @@ st.markdown("""
         max-width: 1000px;
         margin: 0 auto;
     }
-    /* Voice input container styling */
     .voice-box {
         background-color: #f0f4f9;
         border-radius: 12px;
@@ -29,7 +29,6 @@ st.markdown("""
         margin-bottom: 12px;
         border: 1px solid #d3e3fd;
     }
-    /* Status banner */
     .stStatusWidget {
         border-radius: 10px;
     }
@@ -48,6 +47,9 @@ if "session_id" not in st.session_state:
     else:
         st.session_state.session_id = st.session_state.memory.create_session("New Mobile Session")
 
+if "processed_audio_hashes" not in st.session_state:
+    st.session_state.processed_audio_hashes = set()
+
 # -------------------------------------------------------------
 # Sidebar: Settings, Model Config & Personal Guidelines
 # -------------------------------------------------------------
@@ -65,7 +67,7 @@ with st.sidebar:
     current_key = os.getenv(api_key_env_var, "")
     user_key = st.text_input(f"{provider} API Key", value=current_key, type="password", help="Enter your key here.")
     if user_key and user_key != current_key:
-        os.environ[api_key_env_var] = user_key
+        os.environ[api_key_env_var] = user_key.strip()
         st.success(f"{api_key_env_var} updated!")
 
     st.markdown("---")
@@ -117,6 +119,14 @@ for msg in chat_messages:
             st.markdown(msg["content"])
             if msg.get("metadata", {}).get("iterations"):
                 st.caption(f"✨ Quality Verified | Self-Correction Iterations: {msg['metadata']['iterations']}")
+            # One-click copy/download report
+            st.download_button(
+                label="📥 রিপোর্ট ডাউনলোড করুন (Markdown)",
+                data=msg["content"],
+                file_name=f"report_{st.session_state.session_id[:8]}.md",
+                mime="text/markdown",
+                key=f"dl_{msg['id']}"
+            )
 
 # -------------------------------------------------------------
 # Input Controls: Voice Microphone + Text Chat
@@ -127,12 +137,13 @@ user_command = None
 with st.expander("🎙️ ভয়েস কমান্ড দিন (কথা বলুন)", expanded=False):
     audio_val = st.audio_input("মাইক্রোফোনে ক্লিক করে বাংলায় কথা বলুন:")
     if audio_val is not None:
-        if "last_processed_audio" not in st.session_state or st.session_state.last_processed_audio != audio_val.name:
+        audio_bytes = audio_val.read()
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+        if audio_hash not in st.session_state.processed_audio_hashes:
             with st.spinner("🎧 আপনার ভয়েস প্রসেস ও রূপান্তর করা হচ্ছে..."):
                 try:
-                    audio_bytes = audio_val.read()
                     transcribed_text = transcribe_audio_to_text(audio_bytes, mime_type=audio_val.type or "audio/wav")
-                    st.session_state.last_processed_audio = audio_val.name
+                    st.session_state.processed_audio_hashes.add(audio_hash)
                     if transcribed_text:
                         st.info(f"🗣️ আপনি বলেছেন: *\"{transcribed_text}\"*")
                         user_command = transcribed_text
@@ -176,6 +187,14 @@ if user_command:
 
         with st.chat_message("assistant"):
             st.markdown(result["final_report"])
+
+            st.download_button(
+                label="📥 চূড়ান্ত রিপোর্ট ডাউনলোড করুন",
+                data=result["final_report"],
+                file_name="final_agent_report.md",
+                mime="text/markdown",
+                key="dl_latest"
+            )
 
             with st.expander("🔍 সাব-এজেন্ট ট্র্যাজেক্টরি ও কোয়ালিটি স্কোর দেখুন"):
                 st.subheader("Sub-Agent Work & Evaluations")
