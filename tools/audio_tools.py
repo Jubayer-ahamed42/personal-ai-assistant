@@ -33,7 +33,7 @@ def transcribe_audio_to_text(audio_bytes: bytes, mime_type: str = "audio/wav", a
 
         audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=[prompt, audio_part]
         )
 
