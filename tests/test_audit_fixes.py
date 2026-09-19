@@ -88,3 +88,32 @@ def test_message_audio_base64_lifecycle():
             except Exception:
                 pass
 
+def test_orchestrator_chat_mode_direct_routing():
+    """Verify that mode='chat' executes fast direct path without task decomposition."""
+    from agents.orchestrator import MasterOrchestrator
+    from database.memory import MemoryManager
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        temp_db = tf.name
+
+    try:
+        mem = MemoryManager(db_path=temp_db)
+        sess_id = mem.create_session("Mode Test")
+        orch = MasterOrchestrator(memory_manager=mem)
+
+        # Mocking or calling chat mode
+        res = orch.process_command(sess_id, "তুমি কেমন আছো?", mode="chat")
+        assert res is not None
+        assert "final_report" in res
+        assert res.get("iterations") == 1
+        assert len(res.get("sub_agent_results")) == 0  # Fast-path does not dispatch sub-agents
+    finally:
+        if os.path.exists(temp_db):
+            try:
+                os.remove(temp_db)
+            except Exception:
+                pass
+
+

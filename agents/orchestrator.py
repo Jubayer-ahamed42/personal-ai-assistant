@@ -36,9 +36,17 @@ class MasterOrchestrator:
         self,
         session_id: str,
         user_command: str,
+        mode: str = "auto",
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
-        """Executes a user command through smart routing, delegation, evaluation, and voice generation."""
+        """Executes a user command through mode-aware routing, delegation, evaluation, and voice generation.
+        
+        Args:
+            session_id: Target session id.
+            user_command: User message or task prompt.
+            mode: "chat" for instant conversation, "work" for multi-agent squad, or "auto".
+            on_progress: Progress callback for live GUI updates.
+        """
 
         def notify(event_type: str, message: str, details: Optional[Dict[str, Any]] = None):
             event = {
@@ -51,38 +59,47 @@ class MasterOrchestrator:
             return event
 
         user_rules = self.memory.get_preference("assistant_rules", "")
-        notify("status", "নির্দেশ বিশ্লেষণ ও উপযুক্ত কর্মী নির্বাচন করা হচ্ছে...")
 
         # -------------------------------------------------------------
-        # Step 1: Smart Intent Classifier (Fast-path vs Task-path)
+        # Step 1: Mode-Driven Intent Routing (Chat vs Work)
         # -------------------------------------------------------------
-        classifier_prompt = f"""You are the Master Personal Assistant.
+        clean_mode = (mode or "auto").lower()
+        if clean_mode == "chat":
+            intent_type = "CONVERSATION"
+            notify("status", "চ্যাট মোড সক্রিয়: সরাসরি দ্রুত উত্তর প্রস্তুত করা হচ্ছে...")
+        elif clean_mode == "work":
+            intent_type = "TASK"
+            notify("status", "ওয়ার্ক মোড সক্রিয়: স্পেশালিস্ট এজেন্ট স্কোয়াড প্রস্তুত হচ্ছে...")
+        else:
+            notify("status", "নির্দেশ বিশ্লেষণ ও উপযুক্ত মোড নির্ধারণ করা হচ্ছে...")
+            classifier_prompt = f"""You are the Master Personal Assistant.
 Analyze this user input:
 "{user_command}"
 
 Classify into one of two categories:
-1. "CONVERSATION": Greetings, casual talk, questions about who you are, simple chat (e.g. "তুমি আমার কথা বুঝো?", "কেমন আছো", "হাই", "তুমি কী করতে পারো?").
+1. "CONVERSATION": Greetings, casual talk, questions about who you are, simple chat.
 2. "TASK": Requires research, writing code, executing calculations, analyzing data, or solving complex problems.
 
 Respond ONLY with JSON:
 {{"intent_type": "CONVERSATION" or "TASK"}}
 """
-        try:
-            raw_intent = call_llm(
-                messages=[{"role": "user", "content": classifier_prompt}],
-                model=self.model,
-                temperature=0.0
-            )
-            intent_match = re.search(r"\{.*\}", raw_intent, re.DOTALL)
-            intent_type = json.loads(intent_match.group(0))["intent_type"] if intent_match else "TASK"
-        except Exception:
-            intent_type = "TASK"
+            try:
+                raw_intent = call_llm(
+                    messages=[{"role": "user", "content": classifier_prompt}],
+                    model=self.model,
+                    temperature=0.0
+                )
+                intent_match = re.search(r"\{.*\}", raw_intent, re.DOTALL)
+                intent_type = json.loads(intent_match.group(0))["intent_type"] if intent_match else "TASK"
+            except Exception:
+                intent_type = "TASK"
 
         # -------------------------------------------------------------
         # Fast Path: Direct Conversational Response (Instant, ~1-2s)
         # -------------------------------------------------------------
         if intent_type == "CONVERSATION":
             notify("status", "সরাসরি উত্তর প্রস্তুত করা হচ্ছে...")
+
             
             chat_history = self.memory.get_messages(session_id)[-4:]
             formatted_history = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
