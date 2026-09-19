@@ -9,14 +9,17 @@ from agents.research_agent import ResearchAgent
 from agents.coding_agent import CodingAgent
 from agents.data_agent import DataAgent
 from agents.evaluator_agent import EvaluatorAgent
+from tools.tts_tools import text_to_speech_bengali
 
 logger = logging.getLogger(__name__)
 
 class MasterOrchestrator:
     """Master Personal Assistant and Hierarchical Multi-Agent Orchestrator.
     
-    Orchestrates specialized sub-agents, enforces self-correction loops with
-    the Evaluator Agent, and manages state/memory persistence.
+    Features Smart Intent Routing:
+    - Fast Path: Direct instant response for greetings & conversation (~1-2 seconds)
+    - Specialist Path: Decomposes and delegates complex tasks to sub-agents with QA loops
+    - Voice Reply: Automatic Bengali speech synthesis for all responses
     """
 
     def __init__(self, memory_manager: Optional[MemoryManager] = None, model: Optional[str] = None):
@@ -33,7 +36,7 @@ class MasterOrchestrator:
         user_command: str,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
-        """Executes a user command through decomposition, delegation, evaluation, and self-correction."""
+        """Executes a user command through smart routing, delegation, evaluation, and voice generation."""
 
         def notify(event_type: str, message: str, details: Optional[Dict[str, Any]] = None):
             event = {
@@ -45,11 +48,95 @@ class MasterOrchestrator:
                 on_progress(event)
             return event
 
-        # 1. Fetch persistent user preferences/rules from memory
         user_rules = self.memory.get_preference("assistant_rules", "")
-        notify("status", "কমান্ড এবং ব্যক্তিগত নির্দেশনাবলী বিশ্লেষণ করা হচ্ছে...", {"user_rules": user_rules})
+        notify("status", "নির্দেশ বিশ্লেষণ ও উপযুক্ত কর্মী নির্বাচন করা হচ্ছে...")
 
-        # 2. Decompose user command into specialized sub-tasks
+        # -------------------------------------------------------------
+        # Step 1: Smart Intent Classifier (Fast-path vs Task-path)
+        # -------------------------------------------------------------
+        classifier_prompt = f"""You are the Master Personal Assistant.
+Analyze this user input:
+"{user_command}"
+
+Classify into one of two categories:
+1. "CONVERSATION": Greetings, casual talk, questions about who you are, simple chat (e.g. "তুমি আমার কথা বুঝো?", "কেমন আছো", "হাই", "তুমি কী করতে পারো?").
+2. "TASK": Requires research, writing code, executing calculations, analyzing data, or solving complex problems.
+
+Respond ONLY with JSON:
+{{"intent_type": "CONVERSATION" or "TASK"}}
+"""
+        try:
+            raw_intent = call_llm(
+                messages=[{"role": "user", "content": classifier_prompt}],
+                model=self.model,
+                temperature=0.0
+            )
+            intent_match = re.search(r"\{.*\}", raw_intent, re.DOTALL)
+            intent_type = json.loads(intent_match.group(0))["intent_type"] if intent_match else "TASK"
+        except Exception:
+            intent_type = "TASK"
+
+        # -------------------------------------------------------------
+        # Fast Path: Direct Conversational Response (Instant, ~1-2s)
+        # -------------------------------------------------------------
+        if intent_type == "CONVERSATION":
+            notify("status", "সরাসরি উত্তর প্রস্তুত করা হচ্ছে...")
+            
+            chat_history = self.memory.get_messages(session_id)[-4:]
+            formatted_history = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
+
+            direct_prompt = f"""You are an elite, highly intelligent, friendly, and respectful Bengali Personal AI Assistant.
+The user is speaking to you directly.
+Respond warmly, directly, and naturally in fluent native Bengali.
+
+[USER GUIDELINES]:
+{user_rules}
+
+[RECENT CHAT HISTORY]:
+{formatted_history}
+
+[USER MESSAGE]:
+{user_command}
+
+Instructions:
+- If the user asks if you understand them (e.g. "তুমি আমার কথা বুঝো"), reassure them warmly that you clearly understand their Bengali voice/text and are ready to execute any task with your specialized sub-agents.
+- Keep the response elegant, crisp, and helpful.
+"""
+            final_report = call_llm(
+                messages=[{"role": "user", "content": direct_prompt}],
+                model=self.model,
+                temperature=0.4
+            )
+
+            # Generate spoken voice reply in Bengali
+            notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")
+            audio_bytes = text_to_speech_bengali(final_report)
+
+            # Save in database
+            traj_id = self.memory.create_trajectory(session_id, user_command, {"type": "direct_conversation"})
+            self.memory.add_message(session_id, "user", user_command)
+            self.memory.add_message(
+                session_id,
+                "assistant",
+                final_report,
+                metadata={"trajectory_id": traj_id, "iterations": 1, "type": "conversation"}
+            )
+            self.memory.complete_trajectory(traj_id, final_report, 1, status="completed")
+
+            notify("completed", "উত্তর সম্পন্ন!", {"final_report": final_report})
+
+            return {
+                "trajectory_id": traj_id,
+                "final_report": final_report,
+                "audio_bytes": audio_bytes,
+                "sub_agent_results": [],
+                "evaluations": [],
+                "iterations": 1
+            }
+
+        # -------------------------------------------------------------
+        # Specialist Path: Multi-Agent Delegation & QA Loop
+        # -------------------------------------------------------------
         plan_prompt = f"""You are the Master Personal Assistant Orchestrator.
 Your goal is to break down this user request into clear, atomic sub-tasks for specialized sub-agents.
 Carefully interpret native Bengali, regional phrasing, or colloquial terms without confusion.
@@ -65,8 +152,7 @@ Available Sub-Agents:
 2. "coding": For writing Python scripts, debugging, algorithms, file tools, system tests.
 3. "data": For data analysis, metrics tables, math calculations, tabular comparisons.
 
-Analyze whether this requires one or multiple sub-agents.
-Respond ONLY with a JSON object in this exact schema:
+Respond ONLY with a JSON object:
 {{
     "summary": "Brief summary of planned execution",
     "subtasks": [
@@ -100,7 +186,7 @@ Respond ONLY with a JSON object in this exact schema:
         all_evaluations = []
         iteration_count = 1
 
-        # 3. Dispatch tasks to Sub-Agents with Self-Correction Feedback Loop
+        # Dispatch tasks to Sub-Agents with Self-Correction Feedback Loop
         for task_idx, task in enumerate(plan.get("subtasks", [])):
             agent_type = task.get("agent")
             task_desc = task.get("task_description")
@@ -111,7 +197,6 @@ Respond ONLY with a JSON object in this exact schema:
             task_success = False
             sub_output_data = {}
 
-            # Self-Repair Loop (up to MAX_EVAL_RETRIES)
             for attempt in range(1, MAX_EVAL_RETRIES + 1):
                 iteration_count = max(iteration_count, attempt)
 
@@ -138,7 +223,6 @@ Respond ONLY with a JSON object in this exact schema:
                     {"output_snippet": str(sub_output_data.get("output", ""))[:300] + "..."}
                 )
 
-                # 4. Evaluation Gate (LLM-as-a-Judge & Deterministic tests)
                 notify("evaluation_start", f"কোয়ালিটি ও তথ্যের সত্যতা যাচাই চলছে (চেষ্টা #{attempt})...")
                 eval_result = self.evaluator.evaluate_output(
                     user_intent=task_desc,
@@ -147,7 +231,6 @@ Respond ONLY with a JSON object in this exact schema:
                     execution_context={"tool_errors": sub_output_data.get("tool_errors")}
                 )
 
-                # Log evaluation in SQLite database
                 self.memory.log_evaluation(
                     trajectory_id=traj_id,
                     iteration=attempt,
@@ -178,7 +261,7 @@ Respond ONLY with a JSON object in this exact schema:
                 "attempts": attempt
             })
 
-        # 5. Synthesize Final Pristine Report
+        # Final Synthesis
         notify("synthesis", "চূড়ান্ত নিখুঁত ও পরিমার্জিত রিপোর্ট প্রস্তুত করা হচ্ছে...")
 
         synthesis_prompt = f"""You are the Master Personal Assistant.
@@ -207,7 +290,10 @@ Formatting Requirements:
             temperature=0.2
         )
 
-        # 6. Save message and complete trajectory in SQLite
+        # Generate voice audio for the final report summary
+        notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")
+        audio_bytes = text_to_speech_bengali(final_report)
+
         self.memory.add_message(session_id, "user", user_command)
         self.memory.add_message(
             session_id,
@@ -222,6 +308,7 @@ Formatting Requirements:
         return {
             "trajectory_id": traj_id,
             "final_report": final_report,
+            "audio_bytes": audio_bytes,
             "sub_agent_results": sub_agent_results,
             "evaluations": all_evaluations,
             "iterations": iteration_count
