@@ -1,8 +1,10 @@
 import json
 import re
+import base64
 import logging
 from typing import Dict, Any, List, Optional, Callable
 from config import MAX_EVAL_RETRIES, get_active_model
+
 from database.memory import MemoryManager
 from agents.llm_client import call_llm
 from agents.research_agent import ResearchAgent
@@ -111,6 +113,7 @@ Instructions:
             # Generate spoken voice reply in Bengali
             notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")
             audio_bytes = text_to_speech_bengali(final_report)
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
 
             # Save in database
             traj_id = self.memory.create_trajectory(session_id, user_command, {"type": "direct_conversation"})
@@ -119,9 +122,15 @@ Instructions:
                 session_id,
                 "assistant",
                 final_report,
-                metadata={"trajectory_id": traj_id, "iterations": 1, "type": "conversation"}
+                metadata={
+                    "trajectory_id": traj_id,
+                    "iterations": 1,
+                    "type": "conversation",
+                    "audio_b64": audio_b64
+                }
             )
             self.memory.complete_trajectory(traj_id, final_report, 1, status="completed")
+
 
             notify("completed", "উত্তর সম্পন্ন!", {"final_report": final_report})
 
@@ -293,15 +302,21 @@ Formatting Requirements:
         # Generate voice audio for the final report summary
         notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")
         audio_bytes = text_to_speech_bengali(final_report)
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
 
         self.memory.add_message(session_id, "user", user_command)
         self.memory.add_message(
             session_id,
             "assistant",
             final_report,
-            metadata={"trajectory_id": traj_id, "iterations": iteration_count}
+            metadata={
+                "trajectory_id": traj_id,
+                "iterations": iteration_count,
+                "audio_b64": audio_b64
+            }
         )
         self.memory.complete_trajectory(traj_id, final_report, iteration_count, status="completed")
+
 
         notify("completed", "কাজ সফলভাবে সম্পন্ন এবং সম্পূর্ণ যাচাইকৃত!", {"final_report": final_report})
 

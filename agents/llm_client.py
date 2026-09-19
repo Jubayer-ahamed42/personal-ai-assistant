@@ -4,7 +4,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 import litellm
-from config import get_active_model, get_api_key_for_model
+from config import get_active_model, get_api_key_for_model, sanitize_model_name
 
 litellm.suppress_debug_info = True
 logger = logging.getLogger(__name__)
@@ -18,8 +18,10 @@ def call_llm(
     max_retries: int = 4
 ) -> str:
     """Invokes the configured LLM through litellm with automatic retry on 503 / 429 rate limits."""
-    active_model = model or get_active_model()
+    raw_model = model or get_active_model()
+    active_model = sanitize_model_name(raw_model)
     api_key = get_api_key_for_model(active_model)
+
     
     kwargs = {
         "model": active_model,

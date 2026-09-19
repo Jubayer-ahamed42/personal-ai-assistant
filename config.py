@@ -35,8 +35,19 @@ SUPPORTED_MODELS = {
     ]
 }
 
+def sanitize_model_name(model_name: str) -> str:
+    """Sanitizes model name and transparently redirects deprecated or invalid versions to gemini-3.5-flash."""
+    m = model_name.strip() if model_name else DEFAULT_MODEL
+    if "gemini-2.5" in m or "gemini-1.5" in m or "gemini-3.1" in m:
+        return "gemini/gemini-3.5-flash"
+    if m.startswith("gemini-"):
+        return f"gemini/{m}"
+    return m
+
 def get_active_model() -> str:
-    return os.getenv("ACTIVE_MODEL", DEFAULT_MODEL)
+    raw = os.getenv("ACTIVE_MODEL", DEFAULT_MODEL)
+    return sanitize_model_name(raw)
+
 
 def get_api_key_for_model(model_name: str) -> str:
     if "gemini" in model_name:

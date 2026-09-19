@@ -12,9 +12,10 @@ __pycache__/
 *.pyo
 
 # Local Database & Sandbox Runtime files
-database/*.db
+database/*.db*
 sandbox/
-*.sqlite3
+*.sqlite3*
+
 
 # Streamlit Local Configurations
 .streamlit/

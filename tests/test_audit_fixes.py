@@ -44,3 +44,47 @@ Everything looks pristine and ready to ship!"""
     parsed = json.loads(json_match.group(0))
     assert parsed["verdict"] == "APPROVED"
     assert parsed["average_score"] == 4.8
+
+def test_model_sanitization_for_cloud():
+    """Verify that deprecated or legacy Gemini model strings are upgraded to verified 3.5."""
+    from config import sanitize_model_name
+    assert sanitize_model_name("gemini/gemini-2.5-flash") == "gemini/gemini-3.5-flash"
+    assert sanitize_model_name("gemini-2.5-flash") == "gemini/gemini-3.5-flash"
+    assert sanitize_model_name("gemini/gemini-1.5-flash") == "gemini/gemini-3.5-flash"
+    assert sanitize_model_name("gemini-3.5-flash") == "gemini/gemini-3.5-flash"
+
+def test_message_audio_base64_lifecycle():
+    """Verify that audio bytes can be stored in message metadata as base64 and retrieved."""
+    import base64
+    from database.memory import MemoryManager
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        temp_db = tf.name
+
+    try:
+        mem = MemoryManager(db_path=temp_db)
+        sess_id = mem.create_session("Audio Test")
+        sample_audio = b"FAKE_AUDIO_BYTES_FOR_TESTING"
+        b64_audio = base64.b64encode(sample_audio).decode("utf-8")
+
+        mem.add_message(
+            sess_id,
+            "assistant",
+            "টেস্ট উত্তর",
+            metadata={"audio_b64": b64_audio}
+        )
+
+        messages = mem.get_messages(sess_id)
+        assert len(messages) == 1
+        retrieved_b64 = messages[0]["metadata"].get("audio_b64")
+        assert retrieved_b64 is not None
+        assert base64.b64decode(retrieved_b64) == sample_audio
+    finally:
+        if os.path.exists(temp_db):
+            try:
+                os.remove(temp_db)
+            except Exception:
+                pass
+
