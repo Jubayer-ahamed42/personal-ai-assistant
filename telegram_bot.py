@@ -264,7 +264,7 @@ def run_telegram_bot():
     while True:
         try:
             app = build_telegram_app(token)
-            app.run_polling(drop_pending_updates=True)
+            app.run_polling(drop_pending_updates=False)
             break
         except Exception as e:
             logger.warning(f"Telegram polling transient error: {e}. Reconnecting in 5s...")

@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import threading
+import urllib.request
 import subprocess
 import signal
 import logging
@@ -14,8 +16,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ServiceManager")
 
+def keep_alive_worker():
+    """Periodically sends an external HTTP request to prevent Render Free tier from spinning down."""
+    url = os.getenv("RENDER_EXTERNAL_URL") or "https://personal-ai-assistant-eviz.onrender.com"
+    health_url = f"{url.rstrip('/')}/_stcore/health"
+    logger.info(f"Keep-alive monitor initialized for {health_url}")
+    time.sleep(60)
+    while True:
+        try:
+            req = urllib.request.Request(health_url, headers={"User-Agent": "RenderKeepAlive/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                logger.info(f"Keep-alive ping sent to {health_url} - Status: {resp.status}")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping note: {e}")
+        time.sleep(540)  # Ping every 9 minutes (Render free tier sleeps after 15 min)
+
 def main():
     logger.info("Initializing 24/7 AI Assistant Microservices...")
+
+    # Start 24/7 keep-alive monitor in daemon thread
+    t_keepalive = threading.Thread(target=keep_alive_worker, daemon=True)
+    t_keepalive.start()
 
     processes = []
 
