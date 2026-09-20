@@ -28,5 +28,6 @@ EXPOSE 8501
 # Healthcheck to ensure agent stays alive 24/7
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
-# Launch Streamlit with headless settings for cloud hosting
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true", "--browser.gatherUsageStats=false"]
+# Launch Dual Services (Streamlit Web Dashboard + Telegram Bot Worker)
+CMD ["python", "run_services.py"]
+

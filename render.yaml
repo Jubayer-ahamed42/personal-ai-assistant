@@ -15,4 +15,7 @@ services:
         value: "3"
       - key: ACTIVE_MODEL
         value: gemini/gemini-3.5-flash
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
 
