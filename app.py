@@ -12,11 +12,12 @@ from tools.tts_tools import text_to_speech_bengali
 
 # Page configuration - ChatGPT Clean Full-Width Aesthetic
 st.set_page_config(
-    page_title="Personal AI Assistant",
+    page_title="SMART AI ASSISTANT",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
 
 # High-End ChatGPT CSS Styling
 st.markdown("""
@@ -338,9 +339,10 @@ with st.sidebar:
     # Top Brand + New Chat button
     col_logo, col_btn = st.columns([1, 2])
     with col_logo:
-        st.markdown("### 🧠")
+        st.markdown("### 🧠 SMART AI")
     with col_btn:
         if st.button("➕ নতুন চ্যাট", use_container_width=True):
+
             new_id = st.session_state.memory.create_session(f"চ্যাট {len(st.session_state.memory.list_sessions()) + 1}")
             st.session_state.session_id = new_id
             st.rerun()
@@ -419,8 +421,9 @@ if not chat_messages:
     st.markdown("""
     <div class="home-hero">
         <h1 class="home-title">What’s on your mind today?</h1>
-        <div class="home-subtitle">আজকে আপনাকে কীভাবে সাহায্য করতে পারি? যেকোনো নির্দেশ বা কথোপকথন শুরু করুন।</div>
+        <div class="home-subtitle">আমি আপনার SMART AI ASSISTANT। আজকে আপনাকে কীভাবে সাহায্য করতে পারি? যেকোনো নির্দেশ বা কথোপকথন শুরু করুন।</div>
     </div>
+
     """, unsafe_allow_html=True)
 
     # 4 Quick Action Rows (Matching Screenshot)

@@ -95,11 +95,13 @@ class MemoryManager:
             cursor.execute("SELECT value FROM user_preferences WHERE key = 'assistant_rules'")
             if not cursor.fetchone():
                 default_rules = (
+                    "- Your official name is strictly SMART AI ASSISTANT in all capital letters.\n"
+                    "- When introducing yourself or asked for your name, always say: \"আমি আপনার SMART AI ASSISTANT।\"\n"
                     "- Be extremely accurate, rigorous, and fact-grounded.\n"
                     "- Respond naturally in the user's spoken or preferred language (e.g. Bengali).\n"
                     "- Understand colloquial language, regional terms, and variations without getting confused.\n"
                     "- Delegate domain-specific sub-tasks to specialized agents.\n"
-                    "- Always perform self-evaluation and fix errors before delivering the final report."
+                    "- Always perform self-evaluation and fix errors before delivering the final report.\n"
                 )
                 cursor.execute(
                     "INSERT INTO user_preferences (key, value) VALUES (?, ?)",
@@ -108,6 +110,7 @@ class MemoryManager:
                 conn.commit()
 
     # Session Methods
+
     def create_session(self, title: str = "New Session") -> str:
         session_id = str(uuid.uuid4())
         with self._get_connection() as conn:

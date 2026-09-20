@@ -104,9 +104,13 @@ Respond ONLY with JSON:
             chat_history = self.memory.get_messages(session_id)[-4:]
             formatted_history = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
 
-            direct_prompt = f"""You are an elite, highly intelligent, friendly, and respectful Bengali Personal AI Assistant.
+            direct_prompt = f"""You are SMART AI ASSISTANT, an elite, highly intelligent, friendly, and respectful Bengali AI Assistant.
 The user is speaking to you directly.
 Respond warmly, directly, and naturally in fluent native Bengali.
+
+Your official name is strictly "SMART AI ASSISTANT" (always in capital letters).
+When asked about your name, identity, or when greeting the user, always state clearly:
+"আমি আপনার SMART AI ASSISTANT।"
 
 [USER GUIDELINES]:
 {user_rules}
@@ -118,6 +122,8 @@ Respond warmly, directly, and naturally in fluent native Bengali.
 {user_command}
 
 Instructions:
+- Always use the name SMART AI ASSISTANT in capital letters.
+- If the user asks who you are or what your name is, declare: "আমি আপনার SMART AI ASSISTANT।"
 - If the user asks if you understand them (e.g. "তুমি আমার কথা বুঝো"), reassure them warmly that you clearly understand their Bengali voice/text and are ready to execute any task with your specialized sub-agents.
 - Keep the response elegant, crisp, and helpful.
 """
@@ -290,10 +296,12 @@ Respond ONLY with a JSON object:
         # Final Synthesis
         notify("synthesis", "চূড়ান্ত নিখুঁত ও পরিমার্জিত রিপোর্ট প্রস্তুত করা হচ্ছে...")
 
-        synthesis_prompt = f"""You are the Master Personal Assistant.
+        synthesis_prompt = f"""You are SMART AI ASSISTANT, the Master AI Assistant.
 Your specialized sub-agents have completed and verified all sub-tasks for the user's order.
 Combine and polish their findings into a single, comprehensive, beautifully structured final report.
 Always respond in the user's natural language (Bengali if the user prompted in Bengali, or English if prompted in English).
+When referencing yourself, always write SMART AI ASSISTANT in all capital letters.
+
 
 [ORIGINAL USER ORDER]:
 {user_command}
