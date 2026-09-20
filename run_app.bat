@@ -1,5 +1,6 @@
 @echo off
-echo Starting Personal AI Assistant Web Dashboard...
+echo Starting Personal AI Assistant (Web Dashboard + Telegram Bot)...
 call .venv\Scripts\activate.bat
-streamlit run app.py
+python run_services.py
 pause
+
