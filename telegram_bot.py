@@ -1,8 +1,10 @@
 import os
 import io
+import time
 import asyncio
 import logging
 from typing import Dict
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -252,15 +254,22 @@ def build_telegram_app(token: str) -> Application:
     return app
 
 def run_telegram_bot():
-    """Starts the bot via long-polling."""
+    """Starts the bot via long-polling with resilient auto-reconnect."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token or token == "your_telegram_bot_token_here":
         logger.warning("TELEGRAM_BOT_TOKEN is not configured in .env. Bot worker will stay idle.")
         return
 
     logger.info("Starting Telegram Bot long-polling worker...")
-    app = build_telegram_app(token)
-    app.run_polling(drop_pending_updates=True)
+    while True:
+        try:
+            app = build_telegram_app(token)
+            app.run_polling(drop_pending_updates=True)
+            break
+        except Exception as e:
+            logger.warning(f"Telegram polling transient error: {e}. Reconnecting in 5s...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     run_telegram_bot()
+

@@ -55,16 +55,23 @@ def main():
     # Health loop
     try:
         while True:
-            time.sleep(3)
-            for p in processes:
-                poll = p.poll()
-                if poll is not None:
-                    logger.warning(f"Process {p.args} exited with code {poll}. Restarting...")
-                    # If web app died, exit so container reboots cleanly
-                    if "streamlit" in " ".join(p.args):
-                        sys.exit(poll)
+            time.sleep(5)
+
+            # Monitor Streamlit web server
+            if p_web.poll() is not None:
+                logger.error(f"Streamlit web server stopped (code {p_web.poll()}). Rebooting container...")
+                sys.exit(p_web.poll())
+
+            # Monitor Telegram bot worker
+            if tg_token and tg_token.strip() and tg_token != "your_telegram_bot_token_here":
+                if p_tg is None or p_tg.poll() is not None:
+                    exit_code = p_tg.poll() if p_tg else "None"
+                    logger.warning(f"Telegram bot process exited (code {exit_code}). Re-launching worker...")
+                    time.sleep(3)
+                    p_tg = subprocess.Popen([sys.executable, "telegram_bot.py"])
     except KeyboardInterrupt:
         handle_shutdown(None, None)
+
 
 if __name__ == "__main__":
     main()
