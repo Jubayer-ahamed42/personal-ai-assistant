@@ -57,16 +57,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     welcome_text = (
-        f"👋 হ্যালো {user.first_name}!\n\n"
-        "আমি আপনার **SMART AI ASSISTANT**। গুগল ২০২৬ আর্কিটেকচারে তৈরি একটি পূর্ণাঙ্গ স্বায়ত্তশাসিত এজেন্ট।\n\n"
-
-        "✨ **আমি কী করতে পারি?**\n"
+        f"👋 আসসালামু আলাইকুম স্যার!\n\n"
+        "আমি আপনার **SMART AI ASSISTANT**। গুগল ২০২৬ আর্কিটেকচারে তৈরি আপনার একান্ত বিনয়ী, শ্রদ্ধাশীল ও স্বায়ত্তশাসিত ব্যক্তিগত সহকারী।\n\n"
+        "✨ **স্যার, আমি কীভাবে আপনাকে সাহায্য করতে পারি?**\n"
         "• 🎙️ **ভয়েস নোট:** আমাকে সরাসরি বাংলায় ভয়েস মেসেজ পাঠান, আমি শুনে বাংলায় ভয়েসে উত্তর দেব!\n"
         "• 💬 **চ্যাট:** যেকোনো প্রশ্ন বা আলোচনার ১-২ সেকেন্ডে দ্রুত উত্তর।\n"
         "• 💻 **কোডিং ও রিসার্চ:** পাইথন কোড লেখা, স্যান্ডবক্স টেস্ট ও গভীর ডাটা অনুসন্ধান।\n"
         "• 🏆 **হ্যাকাথন স্কাউট ও মেন্টর:** `/hackathon` কমান্ড দিয়ে লাইভ হ্যাকাথন ও উইনিং রোডম্যাপ সন্ধান।\n\n"
         "👉 বর্তমান মোড: **💬 Chat (দ্রুততম উত্তর)**\n"
-        "মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/work` / `/chat` / `/hackathon` কমান্ড ব্যবহার করুন।"
+        "মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/work` / `/chat` / `/hackathon` কমান্ড ব্যবহার করুন, স্যার।"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
@@ -84,7 +83,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"বর্তমান মোড: **{current.upper()}**\n\nকোন মোডটি ব্যবহার করতে চান?",
+        f"বর্তমান মোড: **{current.upper()}**\n\nস্যার, কোন মোডটি সক্রিয় করতে চান?",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=reply_markup
     )
@@ -93,13 +92,13 @@ async def set_chat_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Quick switch to Chat mode."""
     user_id = update.effective_user.id
     USER_MODES[user_id] = "chat"
-    await update.message.reply_text("✅ **Chat মোড সক্রিয়!**\nএখন সাধারণ প্রশ্ন ও কথপোকথনের ১-২ সেকেন্ডে দ্রুততম উত্তর ও ভয়েস রিপ্লাই দেওয়া হবে।", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("✅ **জি স্যার, Chat মোড সক্রিয় করা হয়েছে!**\nএখন যেকোনো প্রশ্ন ও কথপোকথনের ১-২ সেকেন্ডে দ্রুত উত্তর ও ভয়েস রিপ্লাই দেওয়া হবে।", parse_mode=ParseMode.MARKDOWN)
 
 async def set_work_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Quick switch to Work mode."""
     user_id = update.effective_user.id
     USER_MODES[user_id] = "work"
-    await update.message.reply_text("✅ **Work মোড সক্রিয়!**\nএখন কোডিং, স্যান্ডবক্স টেস্ট, ডাটা ও রিসার্চের জন্য স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড কাজ করবে।", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("✅ **জি স্যার, Work মোড সক্রিয় করা হয়েছে!**\nএখন কোডিং, স্যান্ডবক্স টেস্ট, ডাটা ও রিসার্চের জন্য স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড প্রস্তুত রয়েছে।", parse_mode=ParseMode.MARKDOWN)
 
 async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks for mode selection."""
@@ -109,17 +108,17 @@ async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if query.data == "set_mode_chat":
         USER_MODES[user_id] = "chat"
-        await query.edit_message_text("✅ **Chat মোড নির্বাচিত হয়েছে!**\nযেকোনো প্রশ্ন লিখে বা মুখে কথা বলে পাঠান।", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("✅ **জি স্যার, Chat মোড নির্বাচিত হয়েছে!**\nযেকোনো প্রশ্ন লিখে বা মুখে কথা বলে পাঠান।", parse_mode=ParseMode.MARKDOWN)
     elif query.data == "set_mode_work":
         USER_MODES[user_id] = "work"
-        await query.edit_message_text("✅ **Work মোড নির্বাচিত হয়েছে!**\nস্পেশালিস্ট সাব-এজেন্ট স্কোয়াড এখন প্রস্তুত।", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("✅ **জি স্যার, Work মোড নির্বাচিত হয়েছে!**\nস্পেশালিস্ট সাব-এজেন্ট স্কোয়াড এখন প্রস্তুত।", parse_mode=ParseMode.MARKDOWN)
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clears user session history."""
     user_id = update.effective_user.id
     mem = MemoryManager()
     new_sess = mem.create_session(f"Telegram: {update.effective_user.first_name}")
-    await update.message.reply_text("🧹 নতুন ফ্রেশ সেশন শুরু করা হয়েছে!", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("🧹 জি স্যার, পূর্ববর্তী মেমরি পরিষ্কার করে নতুন ফ্রেশ সেশন শুরু করা হয়েছে!", parse_mode=ParseMode.MARKDOWN)
 
 async def hackathon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /hackathon command to quickly scout competitions or brainstorm winning roadmaps."""
@@ -174,7 +173,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     mode = USER_MODES.get(user_id, "chat")
 
     await message.chat.send_chat_action(ChatAction.RECORD_VOICE)
-    status_msg = await message.reply_text("🎧 আপনার ভয়েস মেসেজ শুনছি ও বিশ্লেষণ করছি...", parse_mode=ParseMode.MARKDOWN)
+    status_msg = await message.reply_text("🎧 আসসালামু আলাইকুম স্যার, আপনার ভয়েস শুনছি ও বিশ্লেষণ করছি...", parse_mode=ParseMode.MARKDOWN)
 
     try:
         # Download voice file
@@ -242,7 +241,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Indicate status for long-running Work tasks
     status_msg = None
     if mode == "work":
-        status_msg = await message.reply_text("🧠 ওয়ার্ক মোড: স্পেশালিস্ট এজেন্ট স্কোয়াড কাজ করছে...", parse_mode=ParseMode.MARKDOWN)
+        status_msg = await message.reply_text("🧠 জি স্যার, ওয়ার্ক মোডে স্পেশালিস্ট এজেন্ট স্কোয়াড কাজ করছে...", parse_mode=ParseMode.MARKDOWN)
 
     try:
         mem = MemoryManager()

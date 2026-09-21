@@ -421,7 +421,7 @@ if not chat_messages:
     st.markdown("""
     <div class="home-hero">
         <h1 class="home-title">What’s on your mind today?</h1>
-        <div class="home-subtitle">আমি আপনার SMART AI ASSISTANT। আজকে আপনাকে কীভাবে সাহায্য করতে পারি? যেকোনো নির্দেশ বা কথোপকথন শুরু করুন।</div>
+        <div class="home-subtitle">আসসালামু আলাইকুম স্যার! আমি আপনার SMART AI ASSISTANT। বিনম্র শ্রদ্ধার সাথে আজকে আপনাকে কীভাবে সাহায্য করতে পারি? যেকোনো নির্দেশ বা কথোপকথন শুরু করুন, স্যার।</div>
     </div>
 
     """, unsafe_allow_html=True)
