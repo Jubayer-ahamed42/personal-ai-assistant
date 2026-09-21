@@ -426,9 +426,11 @@ if not chat_messages:
 
     """, unsafe_allow_html=True)
 
-    # 4 Quick Action Rows (Matching Screenshot)
+    # 5 Quick Action Rows (Matching Screenshot & Hackathon Specialist)
     col_a, col_b = st.columns(2)
     with col_a:
+        if st.button("🏆 Hackathon scout & mentor (হ্যাকাথন সন্ধান ও উইনিং রোডম্যাপ)", use_container_width=True):
+            user_command = "চলমান সেরা এআই হ্যাকাথনগুলো খুঁজে বের করো এবং উইনিং প্রজেক্ট আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ দাও"
         if st.button("🔍 Search the web (ইন্টারনেটে তথ্য অনুসন্ধান)", use_container_width=True):
             user_command = "২০২৬ সালের শীর্ষ ৩টি এআই ট্রেন্ড নিয়ে গভীর তথ্য অনুসন্ধান ও সারসংক্ষেপ দাও"
         if st.button("💻 Write or edit code (পাইথনে কোডিং ও স্যান্ডবক্স টেস্ট)", use_container_width=True):

@@ -11,6 +11,7 @@ from agents.research_agent import ResearchAgent
 from agents.coding_agent import CodingAgent
 from agents.data_agent import DataAgent
 from agents.evaluator_agent import EvaluatorAgent
+from agents.hackathon_agent import HackathonAgent
 from tools.tts_tools import text_to_speech_bengali
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class MasterOrchestrator:
         self.researcher = ResearchAgent(model=self.model)
         self.coder = CodingAgent(model=self.model)
         self.data_specialist = DataAgent(model=self.model)
+        self.hackathon_specialist = HackathonAgent(model=self.model)
         self.evaluator = EvaluatorAgent(model=self.model)
 
     def process_command(
@@ -183,13 +185,14 @@ Available Sub-Agents:
 1. "research": For web search, fact-checking, citations, exploring any subject or news.
 2. "coding": For writing Python scripts, debugging, algorithms, file tools, system tests.
 3. "data": For data analysis, metrics tables, math calculations, tabular comparisons.
+4. "hackathon": For finding live/upcoming hackathons (Devpost, Kaggle, Lablab.ai), brainstorming winning project ideas, analyzing judging criteria, creating 24h/48h hackathon roadmaps, pitch decks, and submission READMEs.
 
 Respond ONLY with a JSON object:
 {{
     "summary": "Brief summary of planned execution",
     "subtasks": [
         {{
-            "agent": "research" | "coding" | "data",
+            "agent": "research" | "coding" | "data" | "hackathon",
             "task_description": "Precise instruction for the specialist"
         }}
     ]
@@ -239,6 +242,8 @@ Respond ONLY with a JSON object:
                         sub_output_data = self.coder.run(task_desc, critique=current_critique)
                     elif agent_type == "data":
                         sub_output_data = self.data_specialist.run(task_desc, critique=current_critique)
+                    elif agent_type == "hackathon":
+                        sub_output_data = self.hackathon_specialist.run(task_desc, critique=current_critique)
                     else:
                         sub_output_data = self.researcher.run(task_desc, critique=current_critique)
                 except Exception as e:

@@ -63,9 +63,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✨ **আমি কী করতে পারি?**\n"
         "• 🎙️ **ভয়েস নোট:** আমাকে সরাসরি বাংলায় ভয়েস মেসেজ পাঠান, আমি শুনে বাংলায় ভয়েসে উত্তর দেব!\n"
         "• 💬 **চ্যাট:** যেকোনো প্রশ্ন বা আলোচনার ১-২ সেকেন্ডে দ্রুত উত্তর।\n"
-        "• 💻 **কোডিং ও রিসার্চ:** পাইথন কোড লেখা, স্যান্ডবক্স টেস্ট ও গভীর ডাটা অনুসন্ধান।\n\n"
+        "• 💻 **কোডিং ও রিসার্চ:** পাইথন কোড লেখা, স্যান্ডবক্স টেস্ট ও গভীর ডাটা অনুসন্ধান।\n"
+        "• 🏆 **হ্যাকাথন স্কাউট ও মেন্টর:** `/hackathon` কমান্ড দিয়ে লাইভ হ্যাকাথন ও উইনিং রোডম্যাপ সন্ধান।\n\n"
         "👉 বর্তমান মোড: **💬 Chat (দ্রুততম উত্তর)**\n"
-        "মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/work` / `/chat` কমান্ড ব্যবহার করুন।"
+        "মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/work` / `/chat` / `/hackathon` কমান্ড ব্যবহার করুন।"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
@@ -119,6 +120,51 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mem = MemoryManager()
     new_sess = mem.create_session(f"Telegram: {update.effective_user.first_name}")
     await update.message.reply_text("🧹 নতুন ফ্রেশ সেশন শুরু করা হয়েছে!", parse_mode=ParseMode.MARKDOWN)
+
+async def hackathon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /hackathon command to quickly scout competitions or brainstorm winning roadmaps."""
+    user_id = update.effective_user.id
+    USER_MODES[user_id] = "work"
+    query_args = " ".join(context.args) if context.args else ""
+    user_query = f"চলমান সেরা এআই হ্যাকাথনগুলো খুঁজে বের করো এবং উইনিং প্রজেক্ট আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ দাও {query_args}".strip()
+
+    status_msg = await update.message.reply_text(
+        "🏆 **হ্যাকাথন স্কাউট ও মেন্টর স্পেশালিস্ট সক্রিয় হচ্ছে...**\nDevpost, Kaggle ও Lablab.ai থেকে লাইভ হ্যাকাথন ও উইনিং আইডিয়া বিশ্লেষণ করা হচ্ছে...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    try:
+        session_id = get_session_id(user_id)
+        mem = MemoryManager()
+        orch = MasterOrchestrator(memory_manager=mem, model=get_active_model())
+
+        result = await asyncio.to_thread(
+            orch.process_command,
+            session_id=session_id,
+            user_command=user_query,
+            mode="work"
+        )
+
+        final_text = result.get("final_report", "")
+        audio_bytes = result.get("audio_bytes")
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        for chunk in [final_text[i:i+4000] for i in range(0, len(final_text), 4000)]:
+            await update.message.reply_text(chunk)
+
+        if audio_bytes:
+            await update.message.chat.send_chat_action(ChatAction.RECORD_VOICE)
+            voice_stream = io.BytesIO(audio_bytes)
+            voice_stream.name = "hackathon_guide.mp3"
+            await update.message.reply_voice(voice=voice_stream, caption="🔊 হ্যাকাথন গাইডেন্স অডিও")
+
+    except Exception as e:
+        logger.error(f"Hackathon command error: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ হ্যাকাথন তথ্য খুঁজতে ত্রুটি হয়েছে: {str(e)}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes incoming Telegram voice notes and audio clips."""
@@ -243,6 +289,7 @@ def build_telegram_app(token: str) -> Application:
     app.add_handler(CommandHandler("work", set_work_mode))
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("hackathon", hackathon_command))
     app.add_handler(CallbackQueryHandler(mode_callback))
 
     # Voice & Audio
