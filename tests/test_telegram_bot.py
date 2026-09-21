@@ -16,5 +16,7 @@ def test_telegram_app_builder():
 def test_telegram_user_modes():
     USER_MODES[111] = "chat"
     USER_MODES[222] = "work"
+    USER_MODES[333] = "auto"
     assert USER_MODES[111] == "chat"
     assert USER_MODES[222] == "work"
+    assert USER_MODES[333] == "auto"

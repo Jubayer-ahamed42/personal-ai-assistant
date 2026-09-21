@@ -66,12 +66,21 @@ class MasterOrchestrator:
         # Step 1: Mode-Driven Intent Routing (Chat vs Work)
         # -------------------------------------------------------------
         clean_mode = (mode or "auto").lower()
-        if clean_mode == "chat":
+        task_keywords = [
+            "hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab",
+            "code", "কোড", "পাইথন", "python", "script", "স্ক্রিপ্ট",
+            "data", "ডাটা", "তথ্য", "বিশ্লেষণ", "অ্যানালাইসিস", "analysis",
+            "রোডম্যাপ", "roadmap", "গবেষণা", "রিসার্চ", "research"
+        ]
+        has_task_keywords = any(k in user_command.lower() for k in task_keywords)
+
+        # Smart routing: If explicit domain task keywords are present, intelligently route to TASK squad
+        if clean_mode == "work" or has_task_keywords:
+            intent_type = "TASK"
+            notify("status", "স্পেশালিস্ট এজেন্ট স্কোয়াড প্রস্তুত হচ্ছে...")
+        elif clean_mode == "chat":
             intent_type = "CONVERSATION"
             notify("status", "চ্যাট মোড সক্রিয়: সরাসরি দ্রুত উত্তর প্রস্তুত করা হচ্ছে...")
-        elif clean_mode == "work":
-            intent_type = "TASK"
-            notify("status", "ওয়ার্ক মোড সক্রিয়: স্পেশালিস্ট এজেন্ট স্কোয়াড প্রস্তুত হচ্ছে...")
         else:
             notify("status", "নির্দেশ বিশ্লেষণ ও উপযুক্ত মোড নির্ধারণ করা হচ্ছে...")
             classifier_prompt = f"""You are the Master Personal Assistant.
@@ -136,11 +145,15 @@ Instructions:
 - If the user asks if you understand them (e.g. "তুমি আমার কথা বুঝো"), reassure them humbly and respectfully: "জি স্যার, আমি আপনার প্রতিটি কথা ও নির্দেশ খুব ভালোভাবে বুঝতে পারছি এবং আপনার সেবায় সর্বদা প্রস্তুত আছি।"
 - Keep the response elegant, crisp, respectful, and helpful.
 """
-            final_report = call_llm(
-                messages=[{"role": "user", "content": direct_prompt}],
-                model=self.model,
-                temperature=0.4
-            )
+            try:
+                final_report = call_llm(
+                    messages=[{"role": "user", "content": direct_prompt}],
+                    model=self.model,
+                    temperature=0.4
+                )
+            except Exception as dir_err:
+                logger.error(f"Direct conversation error: {dir_err}")
+                final_report = "আসসালামু আলাইকুম স্যার! আমি আপনার SMART AI ASSISTANT। আমি সর্বদা আপনার সেবায় আন্তরিকভাবে প্রস্তুত আছি, স্যার। আমাকে যেকোনো নির্দেশ দিন।"
 
             # Generate spoken voice reply in Bengali
             notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")
@@ -205,20 +218,23 @@ Respond ONLY with a JSON object:
     ]
 }}
 """
-        raw_plan = call_llm(
-            messages=[{"role": "user", "content": plan_prompt}],
-            model=self.model,
-            temperature=0.1
-        )
-
         try:
+            raw_plan = call_llm(
+                messages=[{"role": "user", "content": plan_prompt}],
+                model=self.model,
+                temperature=0.1
+            )
             json_match = re.search(r"\{.*\}", raw_plan, re.DOTALL)
             clean_plan = json_match.group(0) if json_match else raw_plan.strip()
             plan = json.loads(clean_plan)
         except Exception:
+            is_hack = any(k in user_command.lower() for k in ["hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab", "প্রতিযোগিতা", "রোডম্যাপ"])
+            is_code = any(k in user_command.lower() for k in ["code", "কোড", "python", "পাইথন", "স্ক্রিপ্ট"])
+            is_data = any(k in user_command.lower() for k in ["data", "ডাটা", "অ্যানালাইসিস", "analysis"])
+            default_agent = "hackathon" if is_hack else ("coding" if is_code else ("data" if is_data else "research"))
             plan = {
                 "summary": "সরাসরি সম্পাদন পরিকল্পনা",
-                "subtasks": [{"agent": "research", "task_description": user_command}]
+                "subtasks": [{"agent": default_agent, "task_description": user_command}]
             }
 
         traj_id = self.memory.create_trajectory(session_id, user_command, plan)
@@ -334,11 +350,20 @@ Formatting Requirements:
 - Source citations or verification notes.
 - Direct, pristine, and ready-to-use output.
 """
-        final_report = call_llm(
-            messages=[{"role": "user", "content": synthesis_prompt}],
-            model=self.model,
-            temperature=0.2
-        )
+        try:
+            final_report = call_llm(
+                messages=[{"role": "user", "content": synthesis_prompt}],
+                model=self.model,
+                temperature=0.2
+            )
+        except Exception as synth_err:
+            logger.error(f"Synthesis call error: {synth_err}")
+            findings_text = "\n\n".join([r.get("output", "") for r in sub_agent_results if r.get("output")])
+            final_report = (
+                f"আসসালামু আলাইকুম স্যার!\n\n"
+                f"আপনার নির্দেশিত কাজটি স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সম্পন্ন করেছে। বিস্তারিত প্রতিবেদন:\n\n"
+                f"{findings_text}"
+            )
 
         # Generate voice audio for the final report summary
         notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")

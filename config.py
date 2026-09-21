@@ -12,17 +12,17 @@ SANDBOX_PATH = BASE_DIR / os.getenv("SANDBOX_DIR", "sandbox")
 SANDBOX_PATH.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# Default LLM Settings
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini/gemini-3.5-flash")
+# Default LLM Settings (gemini-3.5-flash-lite provides 1,500 req/day quota on Free Tier vs 20 for flash)
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini/gemini-3.5-flash-lite")
 MAX_EVAL_RETRIES = int(os.getenv("MAX_EVAL_RETRIES", "3"))
 
 # Supported Providers & Recommended Models
 SUPPORTED_MODELS = {
     "Google Gemini": [
-        "gemini/gemini-3.5-flash",
         "gemini/gemini-3.5-flash-lite",
-        "gemini/gemini-3.6-flash",
-        "gemini/gemini-flash-latest"
+        "gemini/gemini-flash-latest",
+        "gemini/gemini-3.5-flash",
+        "gemini/gemini-3.6-flash"
     ],
     "OpenAI": [
         "gpt-4o",
@@ -36,7 +36,7 @@ SUPPORTED_MODELS = {
 }
 
 def sanitize_model_name(model_name: str) -> str:
-    """Sanitizes model name and transparently redirects deprecated or invalid versions to gemini-3.5-flash."""
+    """Sanitizes model name and ensures proper prefix."""
     m = model_name.strip() if model_name else DEFAULT_MODEL
     if "gemini-2.5" in m or "gemini-1.5" in m or "gemini-3.1" in m:
         return "gemini/gemini-3.5-flash"

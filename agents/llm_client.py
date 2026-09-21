@@ -44,9 +44,13 @@ def call_llm(
         except Exception as e:
             err_str = str(e).lower()
             last_exception = e
-            # Handle transient high demand (503) or rate limit (429)
-            if "503" in err_str or "unavailable" in err_str or "429" in err_str or "quota" in err_str:
-                sleep_time = attempt * 2  # 2s, 4s, 6s...
+            # If daily quota is exhausted, retrying the same model will not help - failover immediately
+            if "quota" in err_str or "resource_exhausted" in err_str or "exceeded your current quota" in err_str:
+                logger.warning(f"Model {active_model} quota exhausted. Immediately switching to fallback models...")
+                break
+            # Handle transient high demand (503) or rate limit (429 concurrency)
+            elif "503" in err_str or "unavailable" in err_str or "429" in err_str:
+                sleep_time = attempt * 1.5
                 logger.warning(f"LLM 503/429 transient error on attempt {attempt}. Retrying in {sleep_time}s...")
                 time.sleep(sleep_time)
                 continue
@@ -58,16 +62,26 @@ def call_llm(
             else:
                 time.sleep(1)
 
-    # Fallback to lite model if primary flash model is under extreme demand spike
-    if "gemini" in active_model and active_model != "gemini/gemini-3.5-flash-lite":
-        try:
-            logger.info("Attempting automatic fallback to gemini/gemini-3.5-flash-lite...")
-            fallback_kwargs = kwargs.copy()
-            fallback_kwargs["model"] = "gemini/gemini-3.5-flash-lite"
-            resp = litellm.completion(**fallback_kwargs)
-            return resp.choices[0].message.content or ""
-        except Exception:
-            pass
+    # Automatic fallback cascade for Gemini models (e.g. flash-lite -> flash-latest)
+    if "gemini" in active_model:
+        fallback_candidates = [
+            "gemini/gemini-3.5-flash-lite",
+            "gemini/gemini-flash-latest",
+            "gemini/gemini-3.6-flash"
+        ]
+        for fb_model in fallback_candidates:
+            if fb_model == active_model:
+                continue
+            try:
+                logger.info(f"Attempting automatic fallback to {fb_model}...")
+                fallback_kwargs = kwargs.copy()
+                fallback_kwargs["model"] = fb_model
+                resp = litellm.completion(**fallback_kwargs)
+                if resp and resp.choices and resp.choices[0].message.content:
+                    return resp.choices[0].message.content
+            except Exception as fb_err:
+                logger.debug(f"Fallback model {fb_model} failed: {fb_err}")
+                continue
 
     logger.error(f"All {max_retries} attempts failed for model {active_model}: {last_exception}")
     raise last_exception
