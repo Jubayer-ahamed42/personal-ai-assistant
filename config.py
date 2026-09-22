@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import List
 from dotenv import load_dotenv
 
 # Base Directories
@@ -61,10 +62,28 @@ def get_api_key_for_model(model_name: str) -> str:
         return key.strip() if key else ""
     return ""
 
+def get_backup_api_key_for_model(model_name: str) -> str:
+    if "gemini" in model_name:
+        key = os.getenv("GEMINI_API_KEY_BACKUP", "")
+        return key.strip() if key else ""
+    return ""
+
+def get_api_keys_pool(model_name: str) -> List[str]:
+    """Returns a list of all configured API keys (primary + backup) for automatic failover."""
+    keys = []
+    primary = get_api_key_for_model(model_name)
+    if primary:
+        keys.append(primary)
+    backup = get_backup_api_key_for_model(model_name)
+    if backup and backup not in keys:
+        keys.append(backup)
+    return keys
+
 def is_configured() -> bool:
     """Checks if at least one API key is present."""
     return bool(
         os.getenv("GEMINI_API_KEY") or 
+        os.getenv("GEMINI_API_KEY_BACKUP") or
         os.getenv("OPENAI_API_KEY") or 
         os.getenv("ANTHROPIC_API_KEY")
     )

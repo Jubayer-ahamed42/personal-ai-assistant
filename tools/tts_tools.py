@@ -38,7 +38,11 @@ def text_to_speech_bengali(text: str, max_chars: int = 400) -> Optional[bytes]:
             if last_punct > 50:
                 speech_text = speech_text[:last_punct + 1]
 
-        tts = gTTS(text=speech_text, lang="bn", slow=False)
+        # Detect if text contains Bengali characters (\u0980-\u09FF)
+        has_bengali = bool(re.search(r"[\u0980-\u09FF]", speech_text))
+        tts_lang = "bn" if has_bengali else "en"
+
+        tts = gTTS(text=speech_text, lang=tts_lang, slow=False)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)

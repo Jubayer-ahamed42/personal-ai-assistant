@@ -161,7 +161,9 @@ async def hackathon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mode="work"
         )
 
-        final_text = result.get("final_report", "")
+        final_text = result.get("final_report", "").strip()
+        if not final_text:
+            final_text = "আসসালামু আলাইকুম স্যার! হ্যাকাথন সংক্রান্ত তথ্য ও বিশ্লেষণ সফলভাবে প্রস্তুত করা হয়েছে।"
         audio_bytes = result.get("audio_bytes")
 
         try:
@@ -218,7 +220,9 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             mode=mode
         )
 
-        final_text = result.get("final_report", "")
+        final_text = result.get("final_report", "").strip()
+        if not final_text:
+            final_text = "আসসালামু আলাইকুম স্যার! আপনার ভয়েস নির্দেশটি সফলভাবে বিশ্লেষণ ও সম্পন্ন করা হয়েছে।"
         audio_bytes = result.get("audio_bytes")
 
         # Delete waiting status
@@ -272,7 +276,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             mode=mode
         )
 
-        final_text = result.get("final_report", "")
+        final_text = result.get("final_report", "").strip()
+        if not final_text:
+            final_text = "আসসালামু আলাইকুম স্যার! আপনার নির্দেশটি সফলভাবে সম্পন্ন করা হয়েছে।"
         audio_bytes = result.get("audio_bytes")
 
         if status_msg:

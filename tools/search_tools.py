@@ -1,6 +1,13 @@
 import logging
+import warnings
 from typing import List, Dict, Any
-from duckduckgo_search import DDGS
+
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=r".*duckduckgo_search.*renamed.*")
+
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +22,18 @@ def web_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
         List of dictionaries with title, href, and body.
     """
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-            formatted = []
-            for r in results:
-                formatted.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", "")
-                })
-            return formatted
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+        formatted = []
+        for r in results:
+            formatted.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", "")
+            })
+        return formatted
     except Exception as e:
         logger.error(f"Search tool error for query '{query}': {e}")
         return [{"title": "Search Error", "url": "", "snippet": f"Web search failed: {str(e)}"}]
