@@ -70,7 +70,7 @@ def test_orchestrator_has_hackathon_specialist():
     assert orch.hackathon_specialist.name == "Hackathon Scout & Mentor Specialist"
 
 def test_telegram_bot_has_hackathon_handler():
-    """Verify /hackathon command handler is registered in build_telegram_app."""
+    """Verify /hackathon and /briefing command handlers are registered in build_telegram_app."""
     from telegram_bot import build_telegram_app
     app = build_telegram_app("123456:FAKE_TOKEN_FOR_TEST")
     registered_commands = []
@@ -78,3 +78,36 @@ def test_telegram_bot_has_hackathon_handler():
         if hasattr(handler, "commands"):
             registered_commands.extend(list(handler.commands))
     assert "hackathon" in registered_commands
+    assert "briefing" in registered_commands
+    assert "daily_hackathon" in registered_commands
+
+def test_hackathon_agent_generate_daily_briefing():
+    """Verify generate_daily_briefing produces structured 150-200 word briefing."""
+    agent = HackathonAgent()
+    mock_briefing = (
+        "আসসালামু আলাইকুম স্যার! শুভ সকাল।\n\n"
+        "📢 **তথ্য:** Google Gemini Global AI Challenge 2026, Devpost প্ল্যাটফর্মে অনুষ্ঠিত হচ্ছে। মোট প্রাইজ $1,000,000।\n"
+        "🎯 **বিষয়বস্তু:** মাল্টিমোডাল এআই ও অটোনোমাস এজেন্টিক সিস্টেম তৈরি।\n"
+        "💡 **আমাদের প্রজেক্ট সাজেশন:** আমরা একটি স্মার্ট ভয়েস-এনালাইসিস ভিত্তিক স্বাস্থ্যসেবা ট্রায়াজ এজেন্ট প্রজেক্ট তৈরি করতে পারি।\n\n"
+        "স্যার, এই হ্যাকাথনের বিস্তারিত বিশ্লেষণ ও রোডম্যাপ জানতে নিচের বাটনে ক্লিক করুন।"
+    )
+    with patch("agents.hackathon_agent.call_llm", return_value=mock_briefing):
+        res = agent.generate_daily_briefing()
+        assert "briefing_text" in res
+        assert "title" in res
+        assert "url" in res
+        assert res["briefing_text"] == mock_briefing
+        assert len(res["briefing_text"].split()) <= 200
+
+def test_register_daily_subscriber():
+    """Verify register_daily_subscriber persists chat_id to SQLite memory."""
+    from telegram_bot import register_daily_subscriber
+    from database.memory import MemoryManager
+    import json
+    
+    test_chat_id = 888777666
+    register_daily_subscriber(test_chat_id)
+    mem = MemoryManager()
+    raw = mem.get_preference("daily_hackathon_subscribers", "[]")
+    subscribers = json.loads(raw)
+    assert test_chat_id in subscribers

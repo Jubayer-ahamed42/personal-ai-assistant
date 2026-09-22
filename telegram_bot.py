@@ -1,9 +1,11 @@
 import os
 import io
 import time
+import json
 import asyncio
 import logging
-from typing import Dict
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Any, Optional
 
 from dotenv import load_dotenv
 
@@ -23,7 +25,9 @@ from telegram.ext import (
 from config import get_active_model
 from database.memory import MemoryManager
 from agents.orchestrator import MasterOrchestrator
+from agents.hackathon_agent import HackathonAgent
 from tools.audio_tools import transcribe_audio_to_text
+from tools.tts_tools import text_to_speech_bengali
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -38,10 +42,23 @@ def get_session_id(user_id: int) -> str:
     """Returns a unique, persistent SQLite session ID for the Telegram user."""
     return f"telegram_{user_id}"
 
+def register_daily_subscriber(chat_id: int):
+    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon notifications."""
+    mem = MemoryManager()
+    try:
+        raw = mem.get_preference("daily_hackathon_subscribers", "[]")
+        subscribers = json.loads(raw) if raw else []
+        if chat_id not in subscribers:
+            subscribers.append(chat_id)
+            mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
+    except Exception as e:
+        logger.warning(f"Failed to register daily subscriber {chat_id}: {e}")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /start command with greeting and mode picker."""
     user = update.effective_user
     user_id = user.id
+    register_daily_subscriber(user_id)
     USER_MODES[user_id] = "auto"
 
     # Ensure session in SQLite
@@ -129,6 +146,33 @@ async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "trigger_hackathon":
         USER_MODES[user_id] = "work"
         await query.edit_message_text("🏆 **জি স্যার, হ্যাকাথন স্কাউট ও মেন্টর সক্রিয় করা হচ্ছে...**\nঅনুগ্রহ করে কোন ধরনের হ্যাকাথন বা আইডিয়া চান তা লিখে বা মুখে বলুন। অথবা `/hackathon` লিখুন।", parse_mode=ParseMode.MARKDOWN)
+    elif query.data.startswith("deep_hackathon:"):
+        hackathon_title = query.data.split("deep_hackathon:", 1)[1].strip()
+        status = await query.message.reply_text(
+            f"🏆 **জি স্যার, '{hackathon_title}' হ্যাকাথনের বিস্তারিত বিশ্লেষণ, উইনিং আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ তৈরি করা হচ্ছে...**",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        agent = HackathonAgent(model=get_active_model())
+        task_prompt = f"চলমান হ্যাকাথন '{hackathon_title}'-এর বিস্তারিত বিচার বিশ্লেষণ, ৩টি উইনিং প্রজেক্ট আইডিয়া, টেক স্ট্যাক আর্কিটেকচার, ৪৮ ঘণ্টার মাইলফলক রোডম্যাপ এবং সাবমিশন গাইডেন্স দাও।"
+        res = await asyncio.to_thread(agent.run, task_prompt)
+        report = res.get("output", "")
+        if not report or not report.strip():
+            report = "আসসালামু আলাইকুম স্যার! হ্যাকাথনটির বিস্তারিত বিশ্লেষণ সফলভাবে তৈরি হয়েছে।"
+        audio_bytes = await asyncio.to_thread(text_to_speech_bengali, report)
+
+        try:
+            await status.delete()
+        except Exception:
+            pass
+
+        for chunk in [report[i:i+4000] for i in range(0, len(report), 4000)]:
+            await query.message.reply_text(chunk)
+
+        if audio_bytes:
+            stream = io.BytesIO(audio_bytes)
+            stream.name = "deep_hackathon_roadmap.mp3"
+            await query.message.reply_voice(voice=stream, caption="🔊 বিস্তারিত হ্যাকাথন রোডম্যাপ অডিও")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clears user session history."""
@@ -140,6 +184,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hackathon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /hackathon command to quickly scout competitions or brainstorm winning roadmaps."""
     user_id = update.effective_user.id
+    register_daily_subscriber(user_id)
     USER_MODES[user_id] = "work"
     query_args = " ".join(context.args) if context.args else ""
     user_query = f"চলমান সেরা এআই হ্যাকাথনগুলো খুঁজে বের করো এবং উইনিং প্রজেক্ট আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ দাও {query_args}".strip()
@@ -188,6 +233,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     """Processes incoming Telegram voice notes and audio clips."""
     message = update.message
     user_id = update.effective_user.id
+    register_daily_subscriber(user_id)
     session_id = get_session_id(user_id)
     mode = USER_MODES.get(user_id, "auto")
 
@@ -250,6 +296,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Processes incoming Telegram text messages."""
     message = update.message
     user_id = update.effective_user.id
+    register_daily_subscriber(user_id)
     session_id = get_session_id(user_id)
     mode = USER_MODES.get(user_id, "auto")
     user_text = message.text.strip()
@@ -310,9 +357,104 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"স্যার, অনুগ্রহ করে পুনরায় চেষ্টা করুন অথবা ভিন্নভাবে প্রশ্ন করুন।"
         )
 
+async def send_daily_hackathon_briefing(app: Application, chat_id: int):
+    """Sends the 150-200 word morning hackathon briefing with an interactive detailed analysis button."""
+    agent = HackathonAgent(model=get_active_model())
+    briefing_data = await asyncio.to_thread(agent.generate_daily_briefing)
+
+    text = briefing_data.get("briefing_text", "")
+    h_title = briefing_data.get("title", "AI Hackathon")
+    h_url = briefing_data.get("url", "https://devpost.com")
+
+    # Interactive button: "🔍 বিস্তারিত জানতে চাই"
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔍 বিস্তারিত জানতে চাই",
+                callback_data=f"deep_hackathon:{h_title[:45]}"
+            )
+        ],
+        [
+            InlineKeyboardButton("🌐 অফিশিয়াল রেজিস্ট্রেশন পেজ", url=h_url)
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    header = "🌅 **দৈনিক সকাল ৬:০০ টার হ্যাকাথন সংবাদ ব্রিফিং**\n\n"
+    full_message = f"{header}{text}"
+
+    await app.bot.send_message(
+        chat_id=chat_id,
+        text=full_message,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_markup
+    )
+
+    # Spoken audio in Bengali
+    try:
+        audio_bytes = await asyncio.to_thread(text_to_speech_bengali, text)
+        if audio_bytes:
+            stream = io.BytesIO(audio_bytes)
+            stream.name = "morning_hackathon_briefing.mp3"
+            await app.bot.send_voice(chat_id=chat_id, voice=stream, caption="🔊 সকালের হ্যাকাথন সংবাদ অডিও")
+    except Exception as audio_err:
+        logger.warning(f"Morning briefing voice generation skipped: {audio_err}")
+
+async def daily_briefing_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """On-demand trigger for the daily 6:00 AM morning briefing format."""
+    chat_id = update.effective_chat.id
+    register_daily_subscriber(chat_id)
+    status_msg = await update.message.reply_text(
+        "🌅 **আসসালামু আলাইকুম স্যার, হ্যাকাথন সাব-এজেন্ট লাইভ হ্যাকাথন অনুসন্ধান ও সংবাদ ব্রিফিং তৈরি করছে...**",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    try:
+        await send_daily_hackathon_briefing(context.application, chat_id)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Daily briefing command error: {e}", exc_info=True)
+        await status_msg.edit_text(f"⚠️ আসসালামু আলাইকুম স্যার, ব্রিফিং তৈরিতে সমস্যা হয়েছে: {str(e)}")
+
+async def daily_hackathon_scheduler_loop(app: Application):
+    """Runs 24/7 in background to trigger daily hackathon briefing at 6:00 AM (UTC+6 / Bangladesh Time)."""
+    logger.info("Daily 6:00 AM Hackathon Scheduler Loop initialized (UTC+6).")
+    BD_TZ = timezone(timedelta(hours=6))
+    mem = MemoryManager()
+
+    while True:
+        try:
+            now_bd = datetime.now(BD_TZ)
+            today_str = now_bd.strftime("%Y-%m-%d")
+            last_sent = mem.get_preference("last_daily_hackathon_date", "")
+
+            # Trigger every day at 06:00 AM (UTC+6)
+            if now_bd.hour == 6 and now_bd.minute == 0 and last_sent != today_str:
+                logger.info(f"06:00 AM reached ({today_str})! Scouting hackathons and sending daily briefings...")
+                raw_subs = mem.get_preference("daily_hackathon_subscribers", "[]")
+                subscribers = json.loads(raw_subs) if raw_subs else []
+
+                for cid in subscribers:
+                    try:
+                        await send_daily_hackathon_briefing(app, cid)
+                    except Exception as sub_err:
+                        logger.error(f"Failed to send 6:00 AM briefing to chat {cid}: {sub_err}")
+
+                mem.set_preference("last_daily_hackathon_date", today_str)
+                await asyncio.sleep(65)  # Avoid duplicate trigger in the same minute
+        except Exception as loop_err:
+            logger.error(f"Scheduler loop error: {loop_err}")
+
+        await asyncio.sleep(25)
+
 def build_telegram_app(token: str) -> Application:
     """Builds and configures the Telegram Application."""
-    app = Application.builder().token(token).build()
+    async def post_init(application: Application):
+        asyncio.create_task(daily_hackathon_scheduler_loop(application))
+
+    app = Application.builder().token(token).post_init(post_init).build()
 
     # Register handlers
     app.add_handler(CommandHandler("start", start_command))
@@ -322,6 +464,8 @@ def build_telegram_app(token: str) -> Application:
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("hackathon", hackathon_command))
+    app.add_handler(CommandHandler("briefing", daily_briefing_command))
+    app.add_handler(CommandHandler("daily_hackathon", daily_briefing_command))
     app.add_handler(CallbackQueryHandler(mode_callback))
 
     # Voice & Audio

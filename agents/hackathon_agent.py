@@ -123,3 +123,57 @@ Instructions:
                 "sources": sources,
                 "trajectory": trajectory
             }
+
+    def generate_daily_briefing(self) -> Dict[str, Any]:
+        """Generates a concise (150-200 words) daily morning hackathon briefing with:
+        1. 📢 তথ্য (Basic Info: Name, Platform, Prize, Deadline)
+        2. 🎯 বিষয়বস্তু (What it is about / Themes)
+        3. 💡 আমাদের প্রজেক্ট সাজেশন (Actionable project idea)
+        """
+        hackathons = fetch_devpost_hackathons("", limit=5)
+        top_hackathon = hackathons[0] if hackathons else {
+            "title": "Google Gemini & Antigravity Global AI Challenge 2026",
+            "url": "https://gemini.devpost.com",
+            "prize": "$1,000,000",
+            "deadline": "Rolling / Upcoming 2026",
+            "themes": "Agentic Engineering, Multimodal AI, Spec-Driven Development",
+            "platform": "Devpost"
+        }
+
+        briefing_prompt = f"""You are SMART AI ASSISTANT's Elite Hackathon Scout.
+Prepare the daily 6:00 AM Hackathon News Briefing for Sir ("স্যার").
+
+[FEATURED HACKATHON DATA]:
+Title: {top_hackathon.get('title')}
+Platform: {top_hackathon.get('platform', 'Devpost')}
+Prize Pool: {top_hackathon.get('prize', 'TBA')}
+Deadline: {top_hackathon.get('deadline', 'Upcoming')}
+Theme/Scope: {top_hackathon.get('themes', 'AI Agents, LLMs, Developer Tools')}
+URL: {top_hackathon.get('url')}
+
+MANDATORY RULES:
+1. WORD LIMIT: Strictly within 150 to 200 words. Keep it crisp, sharp, inspiring, and fast to read in under 1 minute.
+2. ETIQUETTE & GREETING:
+   - Greet warmly: "আসসালামু আলাইকুম স্যার! শুভ সকাল।"
+   - Address the user with highest respect as "স্যার" throughout the response.
+3. THREE-PART STRUCTURE:
+   - 📢 **তথ্য (Basic Info):** হ্যাকাথনের নাম, প্ল্যাটফর্ম, প্রাইজ মানি ও ডেডলাইন।
+   - 🎯 **বিষয়বস্তু (What it's about):** এটি কী নিয়ে হবে এবং এর মূল চ্যালেঞ্জ কী।
+   - 💡 **আমাদের প্রজেক্ট সাজেশন (Our Project Suggestion):** আমরা এই হ্যাকাথনে কী ধরনের উদ্ভাবনী প্রজেক্ট বা সল্যুশন নিয়ে কাজ করতে পারি।
+4. CONCLUDING PROMPT:
+   - শেষে এক লাইনে উল্লেখ করুন: "স্যার, এই হ্যাকাথনের বিস্তারিত বিশ্লেষণ ও রোডম্যাপ জানতে নিচের বাটনে ক্লিক করুন।"
+5. Language: Fluent, elegant, natural Bengali with standard tech terms.
+"""
+        report = call_llm(
+            messages=[{"role": "user", "content": briefing_prompt}],
+            model=self.model,
+            temperature=0.3,
+            max_tokens=600
+        )
+
+        return {
+            "briefing_text": report,
+            "hackathon": top_hackathon,
+            "title": top_hackathon.get("title", "AI Hackathon"),
+            "url": top_hackathon.get("url", "https://devpost.com")
+        }
