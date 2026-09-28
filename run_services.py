@@ -7,6 +7,7 @@ import subprocess
 import signal
 import logging
 from dotenv import load_dotenv
+from agents.client_hunter_agent import ClientHunterAgent
 
 load_dotenv()
 
@@ -32,7 +33,26 @@ def keep_alive_worker():
         time.sleep(540)  # Ping every 9 minutes (Render free tier sleeps after 15 min)
 
 def main():
+    if "--test-hunt" in sys.argv:
+        logger.info("Running standalone ClientHunter & Business X-Ray test workflow...")
+        hunter = ClientHunterAgent()
+        res = hunter.execute_hunt_workflow(mark_as_scanned=False)
+        print(res["audit_report_message"])
+        print("\n" + "=" * 60 + "\n")
+        print(res["proposal_letter_message"])
+        return
+
     logger.info("Initializing 24/7 AI Assistant Microservices...")
+
+    # Initialize ClientHunter & Business X-Ray persistent deduplication store
+    try:
+        hunter = ClientHunterAgent()
+        logger.info(
+            f"Sub-Agent Ready: {hunter.name} | Scanned DB: {hunter.store.storage_path} "
+            f"(Daily 07:00 AM X-Ray Audit & 07:10 AM Smart Proposal Letter in UTC+6)"
+        )
+    except Exception as hunter_err:
+        logger.warning(f"ClientHunter initialization note: {hunter_err}")
 
     # Start 24/7 keep-alive monitor in daemon thread
     t_keepalive = threading.Thread(target=keep_alive_worker, daemon=True)
@@ -55,7 +75,10 @@ def main():
     # 2. Start Telegram Bot Worker (if token is configured)
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if tg_token and tg_token.strip() and tg_token != "your_telegram_bot_token_here":
-        logger.info("TELEGRAM_BOT_TOKEN found! Launching Telegram Bot Worker...")
+        logger.info(
+            "TELEGRAM_BOT_TOKEN found! Launching Telegram Bot Worker "
+            "(with 06:00 AM Hackathon & 07:00 AM / 07:10 AM ClientHunter Schedulers)..."
+        )
         p_tg = subprocess.Popen([sys.executable, "telegram_bot.py"])
         processes.append(p_tg)
     else:

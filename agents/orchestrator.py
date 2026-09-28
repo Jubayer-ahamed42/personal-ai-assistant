@@ -12,6 +12,7 @@ from agents.coding_agent import CodingAgent
 from agents.data_agent import DataAgent
 from agents.evaluator_agent import EvaluatorAgent
 from agents.hackathon_agent import HackathonAgent
+from agents.client_hunter_agent import ClientHunterAgent
 from tools.tts_tools import text_to_speech_bengali
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class MasterOrchestrator:
         self.coder = CodingAgent(model=self.model)
         self.data_specialist = DataAgent(model=self.model)
         self.hackathon_specialist = HackathonAgent(model=self.model)
+        self.client_hunter = ClientHunterAgent(model=self.model)
         self.evaluator = EvaluatorAgent(model=self.model)
 
     def process_command(
@@ -68,6 +70,8 @@ class MasterOrchestrator:
         clean_mode = (mode or "auto").lower()
         task_keywords = [
             "hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab",
+            "hunt", "client", "xray", "x-ray", "audit", "proposal", "lead",
+            "ক্লায়েন্ট", "ক্লায়েন্ট", "অডিট", "এক্স-রে", "প্রপোজাল", "লিড",
             "code", "কোড", "পাইথন", "python", "script", "স্ক্রিপ্ট",
             "data", "ডাটা", "তথ্য", "বিশ্লেষণ", "অ্যানালাইসিস", "analysis",
             "রোডম্যাপ", "roadmap", "গবেষণা", "রিসার্চ", "research"
@@ -206,13 +210,14 @@ Available Sub-Agents:
 2. "coding": For writing Python scripts, debugging, algorithms, file tools, system tests.
 3. "data": For data analysis, metrics tables, math calculations, tabular comparisons.
 4. "hackathon": For finding live/upcoming hackathons (Devpost, Kaggle, Lablab.ai), brainstorming winning project ideas, analyzing judging criteria, creating 24h/48h hackathon roadmaps, pitch decks, and submission READMEs.
+5. "client_hunter": For finding target businesses/clients, running 10-point live website/marketing X-Ray audits (Meta Pixel, Google Analytics, AI Chatbot, speed, SEO, booking), calculating Digital Health Scores & lost revenue in BDT, BDT pricing strategies, and generating high-converting client proposal letters.
 
 Respond ONLY with a JSON object:
 {{
     "summary": "Brief summary of planned execution",
     "subtasks": [
         {{
-            "agent": "research" | "coding" | "data" | "hackathon",
+            "agent": "research" | "coding" | "data" | "hackathon" | "client_hunter",
             "task_description": "Precise instruction for the specialist"
         }}
     ]
@@ -228,10 +233,11 @@ Respond ONLY with a JSON object:
             clean_plan = json_match.group(0) if json_match else raw_plan.strip()
             plan = json.loads(clean_plan)
         except Exception:
+            is_hunt = any(k in user_command.lower() for k in ["hunt", "client", "xray", "x-ray", "audit", "ক্লায়েন্ট", "ক্লায়েন্ট", "অডিট", "এক্স-রে", "প্রপোজাল", "লিড"])
             is_hack = any(k in user_command.lower() for k in ["hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab", "প্রতিযোগিতা", "রোডম্যাপ"])
             is_code = any(k in user_command.lower() for k in ["code", "কোড", "python", "পাইথন", "স্ক্রিপ্ট"])
             is_data = any(k in user_command.lower() for k in ["data", "ডাটা", "অ্যানালাইসিস", "analysis"])
-            default_agent = "hackathon" if is_hack else ("coding" if is_code else ("data" if is_data else "research"))
+            default_agent = "client_hunter" if is_hunt else ("hackathon" if is_hack else ("coding" if is_code else ("data" if is_data else "research")))
             plan = {
                 "summary": "সরাসরি সম্পাদন পরিকল্পনা",
                 "subtasks": [{"agent": default_agent, "task_description": user_command}]
@@ -267,6 +273,8 @@ Respond ONLY with a JSON object:
                         sub_output_data = self.data_specialist.run(task_desc, critique=current_critique)
                     elif agent_type == "hackathon":
                         sub_output_data = self.hackathon_specialist.run(task_desc, critique=current_critique)
+                    elif agent_type == "client_hunter":
+                        sub_output_data = self.client_hunter.run(task_desc, critique=current_critique)
                     else:
                         sub_output_data = self.researcher.run(task_desc, critique=current_critique)
                 except Exception as e:

@@ -26,6 +26,7 @@ from config import get_active_model
 from database.memory import MemoryManager
 from agents.orchestrator import MasterOrchestrator
 from agents.hackathon_agent import HackathonAgent
+from agents.client_hunter_agent import ClientHunterAgent
 from tools.audio_tools import transcribe_audio_to_text
 from tools.tts_tools import text_to_speech_bengali
 
@@ -38,12 +39,15 @@ logger = logging.getLogger(__name__)
 # User active modes dictionary (default is "auto" for smart automatic routing)
 USER_MODES: Dict[int, str] = {}
 
+# Stores the most recent generated proposal per chat_id for instant button preview or scheduled delivery
+PENDING_PROPOSALS: Dict[int, Dict[str, Any]] = {}
+
 def get_session_id(user_id: int) -> str:
     """Returns a unique, persistent SQLite session ID for the Telegram user."""
     return f"telegram_{user_id}"
 
 def register_daily_subscriber(chat_id: int):
-    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon notifications."""
+    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
     mem = MemoryManager()
     try:
         raw = mem.get_preference("daily_hackathon_subscribers", "[]")
@@ -53,6 +57,32 @@ def register_daily_subscriber(chat_id: int):
             mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
     except Exception as e:
         logger.warning(f"Failed to register daily subscriber {chat_id}: {e}")
+
+async def safe_send_telegram_text(
+    bot: Any,
+    chat_id: int,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None
+):
+    """Safely sends long Markdown messages in chunks with automatic plain-text fallback on entity parse errors."""
+    if not text:
+        return
+    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == len(chunks) - 1 else None
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=markup
+            )
+        except Exception:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                reply_markup=markup
+            )
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /start command with greeting and mode picker."""
@@ -73,6 +103,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("💼 Work মোড (এজেন্ট স্কোয়াড)", callback_data="set_mode_work"),
             InlineKeyboardButton("🏆 হ্যাকাথন সন্ধান ও মেন্টর", callback_data="trigger_hackathon"),
+        ],
+        [
+            InlineKeyboardButton("🎯 ক্লায়েন্ট হান্টার ও বিজনেস এক্স-রে (/hunt)", callback_data="trigger_client_hunt"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -83,10 +116,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✨ **স্যার, আমি কীভাবে আপনাকে সাহায্য করতে পারি?**\n"
         "• 🎙️ **ভয়েস নোট:** আমাকে সরাসরি বাংলায় ভয়েস মেসেজ পাঠান, আমি শুনে বাংলায় ভয়েসে উত্তর দেব!\n"
         "• 💬 **চ্যাট ও কথোপকথন:** যেকোনো সাধারণ আলোচনা বা প্রশ্নের ১-২ সেকেন্ডে দ্রুত উত্তর।\n"
-        "• 🏆 **হ্যাকাথন স্কাউট ও মেন্টর:** লাইভ এআই হ্যাকাথন সন্ধান, উইনিং আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ।\n"
+        "• 🏆 **হ্যাকাথন স্কাউট ও মেন্টর (সকাল ৬:০০):** লাইভ এআই হ্যাকাথন সন্ধান, উইনিং আইডিয়া ও ৪৮ ঘণ্টার রোডম্যাপ।\n"
+        "• 🎯 **ক্লায়েন্ট হান্টার ও বিজনেস এক্স-রে (সকাল ৭:০০ ও ৭:১০):** রিয়েল বিজনেস ১০-পয়েন্ট অডিট, প্রাইসিং ও রেডিমেড প্রপোজাল লেটার (`/hunt` বা `/hunt fast`)।\n"
         "• 💻 **কোডিং ও ডাটা:** পাইথন কোড লেখা, স্যান্ডবক্স টেস্ট ও নিখুঁত অ্যানালাইসিস।\n\n"
         "👉 বর্তমান মোড: **✦ Auto (স্মার্ট স্বয়ংক্রিয় মোড)**\n"
-        "যেকোনো প্রশ্ন লিখে বা মুখে কথা বলে পাঠান। মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/auto` / `/work` / `/chat` / `/hackathon` কমান্ড ব্যবহার করুন, স্যার।"
+        "যেকোনো প্রশ্ন লিখে বা মুখে কথা বলে পাঠান। মোড পরিবর্তন করতে নিচের বাটনে চাপ দিন অথবা `/auto` / `/work` / `/chat` / `/hackathon` / `/hunt` কমান্ড ব্যবহার করুন, স্যার।"
     )
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
@@ -129,11 +163,12 @@ async def set_work_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ **জি স্যার, Work মোড সক্রিয় করা হয়েছে!**\nএখন কোডিং, স্যান্ডবক্স টেস্ট, ডাটা, রিসার্চ ও হ্যাকাথনের জন্য স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সর্বদা প্রস্তুত।", parse_mode=ParseMode.MARKDOWN)
 
 async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles inline button clicks for mode selection."""
+    """Handles inline button clicks for mode selection and sub-agent actions."""
     query = update.callback_query
     await query.answer()
 
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id if update.effective_chat else user_id
     if query.data == "set_mode_auto":
         USER_MODES[user_id] = "auto"
         await query.edit_message_text("✅ **জি স্যার, Auto মোড নির্বাচিত হয়েছে!**\nযেকোনো প্রশ্ন লিখে বা ভয়েস পাঠিয়ে নির্দেশ দিন।", parse_mode=ParseMode.MARKDOWN)
@@ -146,6 +181,22 @@ async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "trigger_hackathon":
         USER_MODES[user_id] = "work"
         await query.edit_message_text("🏆 **জি স্যার, হ্যাকাথন স্কাউট ও মেন্টর সক্রিয় করা হচ্ছে...**\nঅনুগ্রহ করে কোন ধরনের হ্যাকাথন বা আইডিয়া চান তা লিখে বা মুখে বলুন। অথবা `/hackathon` লিখুন।", parse_mode=ParseMode.MARKDOWN)
+    elif query.data == "trigger_client_hunt":
+        USER_MODES[user_id] = "work"
+        await query.edit_message_text(
+            "🎯 **জি স্যার, ClientHunter & Business X-Ray Sub-Agent সক্রিয় হচ্ছে...**\n"
+            "যেকোনো সময় `/hunt` (১০ মিনিট পর ২য় মেসেজ), `/hunt fast` (১০ সেকেন্ড পর ২য় মেসেজ) অথবা `/hunt <category/location>` লিখে কমান্ড দিন। এখনই একটি লাইভ অডিট শুরু করা হচ্ছে...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await execute_and_send_client_hunt(context.application, chat_id, query_str="", delay_seconds=10)
+    elif query.data == "send_proposal_now":
+        pending = PENDING_PROPOSALS.get(chat_id)
+        if pending:
+            await send_client_hunter_step2(context.application, chat_id, pending)
+        else:
+            agent = ClientHunterAgent(model=get_active_model())
+            workflow_data = await asyncio.to_thread(agent.execute_hunt_workflow, "", False)
+            await send_client_hunter_step2(context.application, chat_id, workflow_data)
     elif query.data.startswith("deep_hackathon:"):
         hackathon_title = query.data.split("deep_hackathon:", 1)[1].strip()
         status = await query.message.reply_text(
@@ -418,6 +469,112 @@ async def daily_briefing_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Daily briefing command error: {e}", exc_info=True)
         await status_msg.edit_text(f"⚠️ আসসালামু আলাইকুম স্যার, ব্রিফিং তৈরিতে সমস্যা হয়েছে: {str(e)}")
 
+async def send_client_hunter_step1(app: Application, chat_id: int, workflow_data: Dict[str, Any], delay_seconds: int = 600):
+    """Sends Step 1 Message (7:00 AM): Full 10-Point Business X-Ray Audit, Solutions & BDT Pricing Report."""
+    PENDING_PROPOSALS[chat_id] = workflow_data
+    report_text = workflow_data.get("audit_report_message", "")
+    company_url = workflow_data.get("company", {}).get("website", "https://google.com")
+    if not company_url.startswith(("http://", "https://")):
+        company_url = "https://" + company_url
+
+    delay_label = f"{delay_seconds} সেকেন্ড" if delay_seconds < 60 else f"{delay_seconds // 60} মিনিট"
+    header = (
+        f"🕖 **১ম মেসেজ: কোম্পানির পূর্ণাঙ্গ এক্স-রে অডিট, সমাধান ও প্রাইসিং রিপোর্ট**\n"
+        f"*(২য় মেসেজ তথা রেডিমেড প্রপোজাল লেটার ঠিক {delay_label} পর স্বয়ংক্রিয়ভাবে আসবে)*\n\n"
+    )
+    full_msg = f"{header}{report_text}"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📨 এখনই ২য় মেসেজ (প্রপোজাল লেটার) দেখুন", callback_data="send_proposal_now")
+        ],
+        [
+            InlineKeyboardButton("🌐 টার্গেট কোম্পানির ওয়েবসাইট", url=company_url)
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_send_telegram_text(app.bot, chat_id, full_msg, reply_markup=reply_markup)
+
+async def send_client_hunter_step2(app: Application, chat_id: int, workflow_data: Dict[str, Any]):
+    """Sends Step 2 Message (7:10 AM / after delay): Ready-Made High-Converting Smart Proposal Letter & 1-click WhatsApp link."""
+    proposal_text = workflow_data.get("proposal_letter_message", "")
+    wa_url = workflow_data.get("company_whatsapp_url", "https://wa.me/8801700000000")
+    company_name = workflow_data.get("company", {}).get("name", "টার্গেট কোম্পানি")
+
+    header = f"🕙 **২য় মেসেজ: '{company_name}'-কে পাঠানোর রেডিমেড স্মার্ট প্রপোজাল লেটার**\n\n"
+    full_msg = f"{header}{proposal_text}"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📲 ১-ক্লিকে কোম্পানির WhatsApp-এ প্রপোজাল পাঠান", url=wa_url)
+        ],
+        [
+            InlineKeyboardButton("🟢 আপনার অফিশিয়াল WhatsApp", url="https://wa.me/8801610594042")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_send_telegram_text(app.bot, chat_id, full_msg, reply_markup=reply_markup)
+
+async def _delayed_step2_task(app: Application, chat_id: int, workflow_data: Dict[str, Any], delay_seconds: int):
+    """Sleeps for delay_seconds (600s for 7:10 AM schedule, or 10s for /hunt fast) and automatically sends Step 2 Proposal Letter."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        await send_client_hunter_step2(app, chat_id, workflow_data)
+    except Exception as e:
+        logger.error(f"Delayed Step 2 Proposal send error for chat {chat_id}: {e}")
+
+async def execute_and_send_client_hunt(
+    app: Application,
+    chat_id: int,
+    query_str: str = "",
+    delay_seconds: int = 600
+) -> Dict[str, Any]:
+    """Executes ClientHunterAgent, sends Message 1 immediately, and schedules Message 2 after delay_seconds."""
+    agent = ClientHunterAgent(model=get_active_model())
+    workflow_data = await asyncio.to_thread(agent.execute_hunt_workflow, query_str, True)
+
+    await send_client_hunter_step1(app, chat_id, workflow_data, delay_seconds=delay_seconds)
+    asyncio.create_task(_delayed_step2_task(app, chat_id, workflow_data, delay_seconds=delay_seconds))
+    return workflow_data
+
+async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles /hunt, /hunt fast, and /hunt <category/location> commands."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    register_daily_subscriber(chat_id)
+    USER_MODES[user_id] = "work"
+
+    raw_args = list(context.args) if context.args else []
+    is_fast = any(arg.lower() == "fast" for arg in raw_args)
+    filtered_args = [arg for arg in raw_args if arg.lower() != "fast"]
+    category_query = " ".join(filtered_args).strip()
+
+    # 10 seconds delay in '/hunt fast' test mode, 600 seconds (10 minutes) in standard mode
+    delay_seconds = 10 if is_fast else 600
+    delay_desc = "১০ সেকেন্ড (`fast` টেস্ট মোড)" if is_fast else "১০ মিনিট (`600s` স্ট্যান্ডার্ড শিডিউল)"
+
+    status_msg = await update.message.reply_text(
+        f"🎯 **আসসালামু আলাইকুম স্যার! ClientHunter & Business X-Ray Sub-Agent সক্রিয় হয়েছে...**\n"
+        f"🔍 রিয়েল টার্গেট বিজনেস খুঁজে তাদের ওয়েবসাইট, Meta Pixel (`fbq`), Google Analytics (`gtag`), AI Chatbot ও SEO লাইভ স্ক্যান করা হচ্ছে...\n"
+        f"⏱️ ১ম মেসেজ এখনই আসবে এবং ২য় মেসেজ (প্রপোজাল লেটার) ঠিক **{delay_desc}** পর স্বয়ংক্রিয়ভাবে আসবে।",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    try:
+        await execute_and_send_client_hunt(
+            context.application,
+            chat_id=chat_id,
+            query_str=category_query,
+            delay_seconds=delay_seconds
+        )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Hunt command error: {e}", exc_info=True)
+        await status_msg.edit_text(f"⚠️ আসসালামু আলাইকুম স্যার, ক্লায়েন্ট হান্ট অডিটে ত্রুটি হয়েছে: {str(e)}")
+
 async def daily_hackathon_scheduler_loop(app: Application):
     """Runs 24/7 in background to trigger daily hackathon briefing at 6:00 AM (UTC+6 / Bangladesh Time)."""
     logger.info("Daily 6:00 AM Hackathon Scheduler Loop initialized (UTC+6).")
@@ -449,10 +606,51 @@ async def daily_hackathon_scheduler_loop(app: Application):
 
         await asyncio.sleep(25)
 
+async def daily_client_hunter_scheduler_loop(app: Application):
+    """Runs 24/7 in background to trigger ClientHunter & Business X-Ray every day at 7:00 AM (Asia/Dhaka, UTC+6)
+    and automatically delivers the 2nd Proposal Letter message 10 minutes later at 7:10 AM (600s delay).
+    """
+    logger.info("Daily 7:00 AM / 7:10 AM ClientHunter & Business X-Ray Scheduler Loop initialized (UTC+6).")
+    BD_TZ = timezone(timedelta(hours=6))
+    mem = MemoryManager()
+
+    while True:
+        try:
+            now_bd = datetime.now(BD_TZ)
+            today_str = now_bd.strftime("%Y-%m-%d")
+            last_hunt_date = mem.get_preference("last_daily_client_hunt_date", "")
+
+            # Trigger every day at 07:00 AM (Asia/Dhaka, UTC+6)
+            if now_bd.hour == 7 and now_bd.minute == 0 and last_hunt_date != today_str:
+                logger.info(f"07:00 AM BD Time reached ({today_str})! Running Daily ClientHunter & Business X-Ray...")
+                raw_subs = mem.get_preference("daily_hackathon_subscribers", "[]")
+                subscribers = json.loads(raw_subs) if raw_subs else []
+
+                if subscribers:
+                    agent = ClientHunterAgent(model=get_active_model())
+                    workflow_data = await asyncio.to_thread(agent.execute_hunt_workflow, "", True)
+
+                    for cid in subscribers:
+                        try:
+                            # Step 1 at 7:00 AM: Full Business X-Ray Audit, Solutions & Pricing Report
+                            await send_client_hunter_step1(app, cid, workflow_data, delay_seconds=600)
+                            # Step 2 scheduled for 7:10 AM (exactly 600 seconds / 10 minutes later)
+                            asyncio.create_task(_delayed_step2_task(app, cid, workflow_data, delay_seconds=600))
+                        except Exception as sub_err:
+                            logger.error(f"Failed to send 7:00 AM ClientHunter report to chat {cid}: {sub_err}")
+
+                mem.set_preference("last_daily_client_hunt_date", today_str)
+                await asyncio.sleep(65)  # Avoid duplicate trigger in the same minute
+        except Exception as loop_err:
+            logger.error(f"ClientHunter scheduler loop error: {loop_err}")
+
+        await asyncio.sleep(25)
+
 def build_telegram_app(token: str) -> Application:
     """Builds and configures the Telegram Application."""
     async def post_init(application: Application):
         asyncio.create_task(daily_hackathon_scheduler_loop(application))
+        asyncio.create_task(daily_client_hunter_scheduler_loop(application))
 
     app = Application.builder().token(token).post_init(post_init).build()
 
@@ -466,6 +664,8 @@ def build_telegram_app(token: str) -> Application:
     app.add_handler(CommandHandler("hackathon", hackathon_command))
     app.add_handler(CommandHandler("briefing", daily_briefing_command))
     app.add_handler(CommandHandler("daily_hackathon", daily_briefing_command))
+    app.add_handler(CommandHandler("hunt", hunt_command))
+    app.add_handler(CommandHandler("client_hunt", hunt_command))
     app.add_handler(CallbackQueryHandler(mode_callback))
 
     # Voice & Audio
