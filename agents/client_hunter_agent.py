@@ -1,14 +1,16 @@
 import os
 import re
 import ssl
+import gzip
 import time
 import json
 import urllib.request
 import urllib.parse
+import urllib.error
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 try:
     from config import BASE_DIR, get_active_model
@@ -360,13 +362,27 @@ def sanitize_whatsapp_number(phone_str: str) -> str:
     """Extracts digits and normalizes Bangladesh/international phone numbers for https://wa.me/<number>."""
     if not phone_str:
         return "8801700000000"
-    digits = re.sub(r"\D+", "", str(phone_str))
+    raw = str(phone_str).strip()
+    # Extract the first distinct phone candidate if multiple numbers are separated by /, comma, pipe, or semicolon
+    primary_match = re.search(r"(?:\+?880|00880|01|096)[0-9\-\s()]{7,15}", raw)
+    candidate = primary_match.group(0) if primary_match else re.split(r"[/,|;]", raw)[0]
+    digits = re.sub(r"\D+", "", candidate)
     if not digits:
         return "8801700000000"
+    if digits.startswith("00"):
+        digits = digits[2:]
     if digits.startswith("01") and len(digits) == 11:
         digits = "88" + digits
-    elif digits.startswith("880") and len(digits) >= 13:
+    elif digits.startswith("096") and len(digits) in (10, 11):
+        digits = "88" + digits
+    elif digits.startswith("8801") and len(digits) >= 13:
         digits = digits[:13]
+    elif digits.startswith("88096") and len(digits) >= 12:
+        digits = digits[:13]
+    elif digits.startswith("0") and len(digits) == 10:
+        digits = "88" + digits
+    if len(digits) < 10:
+        return "8801700000000"
     return digits
 
 
@@ -382,7 +398,7 @@ class BusinessXRayScanner:
             "http_status": 0,
             "load_time_sec": 0.0,
             "page_size_kb": 0.0,
-            "has_ssl": str(url).lower().startswith("https://"),
+            "has_ssl": False,
             "has_meta_pixel": False,
             "meta_pixel_signals": [],
             "has_google_analytics": False,
@@ -403,6 +419,7 @@ class BusinessXRayScanner:
             "security_headers_present": [],
             "discovered_emails": [],
             "discovered_phones": [],
+            "discovered_facebook": "",
             "scan_mode": "live_http"
         }
 
@@ -413,6 +430,7 @@ class BusinessXRayScanner:
         target_url = url.strip()
         if not target_url.startswith(("http://", "https://")):
             target_url = "https://" + target_url
+        result["has_ssl"] = target_url.lower().startswith("https://")
 
         headers = {
             "User-Agent": (
@@ -425,6 +443,8 @@ class BusinessXRayScanner:
 
         start_ts = time.perf_counter()
         html = ""
+        raw_bytes = b""
+        resp_headers: Dict[str, str] = {}
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -437,19 +457,46 @@ class BusinessXRayScanner:
                 result["is_live"] = True
                 result["http_status"] = getattr(resp, "status", 200) or 200
                 result["load_time_sec"] = round(elapsed, 2)
-                result["page_size_kb"] = round(len(raw_bytes) / 1024.0, 1)
-
+                final_url = resp.geturl() if hasattr(resp, "geturl") and callable(resp.geturl) else target_url
+                if isinstance(final_url, str) and final_url.lower().startswith("https://"):
+                    result["has_ssl"] = True
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()} if resp.headers else {}
-                for sec_h in ["strict-transport-security", "x-frame-options", "x-content-type-options", "content-security-policy"]:
-                    if sec_h in resp_headers:
-                        result["security_headers_present"].append(sec_h)
-
-                html = raw_bytes.decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as http_err:
+            elapsed = time.perf_counter() - start_ts
+            result["http_status"] = int(getattr(http_err, "code", 0) or 0)
+            result["load_time_sec"] = round(elapsed, 2)
+            result["scan_mode"] = f"http_error_{result['http_status']}"
+            try:
+                raw_bytes = http_err.read(150_000) if hasattr(http_err, "read") else b""
+                resp_headers = {k.lower(): v for k, v in http_err.headers.items()} if getattr(http_err, "headers", None) else {}
+            except Exception:
+                raw_bytes = b""
+            if not raw_bytes:
+                return result
         except Exception as e:
             elapsed = time.perf_counter() - start_ts
             result["load_time_sec"] = round(elapsed, 2)
             result["scan_mode"] = f"unreachable_or_blocked ({type(e).__name__})"
             logger.debug(f"Live HTTP scan note for {target_url}: {e}")
+            return result
+
+        # Decompress gzip payload if compressed
+        if raw_bytes and (
+            resp_headers.get("content-encoding", "").lower() == "gzip"
+            or raw_bytes[:2] == b"\x1f\x8b"
+        ):
+            try:
+                raw_bytes = gzip.decompress(raw_bytes)
+            except Exception:
+                pass
+
+        result["page_size_kb"] = round(len(raw_bytes) / 1024.0, 1)
+        for sec_h in ["strict-transport-security", "x-frame-options", "x-content-type-options", "content-security-policy"]:
+            if sec_h in resp_headers:
+                result["security_headers_present"].append(sec_h)
+
+        html = raw_bytes.decode("utf-8", errors="ignore")
+        if not html.strip():
             return result
 
         html_lower = html.lower()
@@ -542,16 +589,22 @@ class BusinessXRayScanner:
         empty_links = re.findall(r'href=["\'](#|javascript:void\(0\)|javascript:;)["\']', html_lower)
         result["empty_links_count"] = len(empty_links)
 
-        # 8. Extract any visible emails or BD phone numbers
+        # 8. Extract any visible emails, BD phone numbers, and Facebook page links
         emails = set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", html))
         valid_emails = [
             e for e in emails
             if not e.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".js", ".css"))
         ]
-        result["discovered_emails"] = valid_emails[:3]
+        result["discovered_emails"] = sorted(valid_emails)[:3]
 
         phones = set(re.findall(r"(?:\+?880|01)[0-9\-\s]{8,13}", html))
-        result["discovered_phones"] = [re.sub(r"\s+", " ", p.strip()) for p in list(phones)[:3]]
+        result["discovered_phones"] = [re.sub(r"\s+", " ", p.strip()) for p in sorted(phones)[:3]]
+
+        fb_matches = re.findall(r"https?://(?:www\.)?facebook\.com/[a-zA-Z0-9._\-]+", html)
+        for fb_url in fb_matches:
+            if not any(ig in fb_url.lower() for ig in ["/tr", "/sharer", "/plugins", "/dialog"]):
+                result["discovered_facebook"] = fb_url
+                break
 
         return result
 
@@ -611,12 +664,12 @@ class DigitalHealthAndRevenueCalculator:
 
         lost_customer_pct = max(22, min(missing_factors, 45))
 
-        # Conservative monthly potential leads (1.5% of traffic) * lost_customer_pct
+        # Conservative monthly potential leads (1.2% of traffic) * lost_customer_pct
         potential_monthly_orders = max(40, int(visitors * 0.012))
         lost_orders_per_month = max(15, int(potential_monthly_orders * (lost_customer_pct / 100.0)))
         raw_lost_bdt = lost_orders_per_month * avg_ticket
 
-        # Keep realistic BDT bounds for Bangladeshi SMEs & Enterprises (85,000 BDT to 6,50,000 BDT/month)
+        # Keep realistic BDT bounds for Bangladeshi SMEs & Enterprises (85,000 BDT to 7,50,000 BDT/month)
         min_lost_bdt = max(85000, min(int(raw_lost_bdt * 0.8), 450000))
         max_lost_bdt = max(140000, min(int(raw_lost_bdt * 1.25), 750000))
 
@@ -627,20 +680,20 @@ class DigitalHealthAndRevenueCalculator:
             walk_away = "২৫,০০০ টাকা"
             retainer = "৫,০০০ টাকা - ৮,০০০ টাকা / মাস"
             itemized = [
-                "১. **24/7 AI WhatsApp & Facebook Messenger Automation Bot (লিড ক্যাপচার ও অটো-বুকিং):** ১৫,০০০ - ২৫,০০০ টাকা",
-                "২. **Meta Pixel (`fbq`), Server-Side Conversion API (CAPI) ও Google Analytics 4 (`gtag`) সেটআপ:** ৮,০০০ - ১২,০০০ টাকা",
-                "৩. **High-Speed Modern Booking / Lead Funnel Web App & Local SEO Optimization:** ২০,০০০ - ৩৫,০০০ টাকা",
-                "৪. **কমপ্লিট গ্রোথ ও অটোমেশন প্যাকেজ (Full Bundle Offer):** ৪৫,০০০ টাকা (এককালীন)"
+                "১. **24/7 AI WhatsApp & Messenger Automation Bot:** ১৫,০০০ - ২৫,০০০ টাকা",
+                "২. **Meta Pixel (`fbq`), Server-Side CAPI ও GA4 (`gtag`) সেটআপ:** ৮,০০০ - ১২,০০০ টাকা",
+                "৩. **High-Speed Booking / Lead Funnel Web App & Local SEO:** ২০,০০০ - ৩৫,০০০ টাকা",
+                "৪. **কমপ্লিট গ্রোথ ও অটোমেশন প্যাকেজ (Full Bundle):** ৪৫,০০০ টাকা (এককালীন)"
             ]
         else:
             asking_range = "২০,০০০ টাকা থেকে ৪০,০০০ টাকা"
             walk_away = "১৫,০০০ টাকা"
             retainer = "৩,০০০ টাকা - ৫,০০০ টাকা / মাস"
             itemized = [
-                "১. **24/7 AI Chatbot (WhatsApp + Facebook Page Auto-Reply & Order/Serial System):** ১২,০০০ - ১৮,০০০ টাকা",
-                "২. **Meta Pixel (`fbq`) + Server-Side CAPI ও Google Analytics (`gtag`/`gtm`) ফুল ট্র্যাকিং সেটআপ:** ৬,০০০ - ১০,০০০ টাকা",
-                "৩. **High-Speed Mobile-Responsive Web Funnel / Booking System Upgrade & SEO:** ১৫,০০০ - ২৫,০০০ টাকা",
-                "৪. **কমপ্লিট বিজনেস অটোমেশন প্যাকেজ (All-in-One Package):** ২৮,০০০ - ৩৫,০০০ টাকা (এককালীন)"
+                "১. **24/7 AI Chatbot (WhatsApp + Facebook Auto-Reply & Booking):** ১২,০০০ - ১৮,০০০ টাকা",
+                "২. **Meta Pixel (`fbq`) + Server-Side CAPI ও GA4 (`gtag`/`gtm`) সেটআপ:** ৬,০০০ - ১০,০০০ টাকা",
+                "৩. **High-Speed Mobile Web Funnel / Booking System & SEO:** ১৫,০০০ - ২৫,০০০ টাকা",
+                "৪. **কমপ্লিট বিজনেস অটোমেশন প্যাকেজ (All-in-One):** ২৮,০০০ - ৩৫,০০০ টাকা (এককালীন)"
             ]
 
         return {
@@ -655,6 +708,59 @@ class DigitalHealthAndRevenueCalculator:
             "monthly_retainer_bdt": retainer,
             "itemized_pricing_bdt": itemized
         }
+
+
+# Bilingual Category & Location Synonym Maps for Accurate Target Discovery
+CATEGORY_SYNONYM_GROUPS: List[Tuple[str, List[str]]] = [
+    ("healthcare", [
+        "hospital", "clinic", "diagnostic", "healthcare", "medical", "doctor", "pathology", "nursing",
+        "হাসপাতাল", "ক্লিনিক", "ডায়াগনস্টিক", "ডায়াগনস্টিক", "হেলথকেয়ার", "স্বাস্থ্য", "মেডিকেল"
+    ]),
+    ("restaurant", [
+        "restaurant", "food", "dine", "cafe", "catering", "kacchi", "kitchen",
+        "রেস্টুরেন্ট", "খাবার", "ডাইন", "কাচ্চি", "ক্যাফে", "ফুড"
+    ]),
+    ("hotel_resort", [
+        "hotel", "resort", "hospitality", "luxury", "palace", "vacation",
+        "হোটেল", "রিসোর্ট", "হসপিটালিটি"
+    ]),
+    ("real_estate", [
+        "real estate", "realestate", "property", "developer", "builders", "housing", "apartment", "flat",
+        "রিয়েল এস্টেট", "রিয়েল এস্টেট", "প্রপার্টি", "ডেভেলপার", "বিল্ডার্স", "ফ্ল্যাট", "হাউজিং"
+    ]),
+    ("ecommerce", [
+        "ecommerce", "e-commerce", "fashion", "clothing", "organic", "grocery", "retail", "shop", "store",
+        "ই-কমার্স", "ইকমার্স", "ফ্যাশন", "ক্লথিং", "অর্গানিক", "শপ", "ব্র্যান্ড"
+    ]),
+    ("travel", [
+        "travel", "tour", "holiday", "holidays", "visa", "agency", "airlines", "ticketing", "umrah",
+        "ট্রাভেল", "ট্যুর", "ভিসা", "হলিডে", "এজেন্সি", "ওমরাহ"
+    ]),
+    ("coaching_edtech", [
+        "coaching", "education", "edtech", "study", "abroad", "ielts", "mentors", "academy", "institute", "training",
+        "কোচিং", "শিক্ষা", "স্টাডি", "আইইএলটিএস", "একাডেমি", "প্রাইভেট প্রতিষ্ঠান", "কনসালটেন্সি"
+    ]),
+]
+
+LOCATION_SYNONYM_GROUPS: List[Tuple[str, List[str]]] = [
+    ("dhanmondi", ["dhanmondi", "satmasjid", "green road", "ধানমন্ডি", "গ্রিন রোড", "সাতমসজিদ"]),
+    ("gulshan", ["gulshan", "banani", "গুলশান", "বনানী"]),
+    ("panthapath", ["panthapath", "karwan", "পান্থপথ", "কারওয়ান"]),
+    ("mirpur_mohammadpur", ["mirpur", "mohammadpur", "kalabagan", "asad gate", "মিরপুর", "মোহাম্মদপুর", "কলাবাগান", "আসাদ গেট"]),
+    ("coxs_bazar", ["cox", "coxsbazar", "kolatoli", "কক্সবাজার", "কলাতলী"]),
+    ("sylhet", ["sylhet", "sreemangal", "moulvibazar", "সিলেট", "শ্রীমঙ্গল", "মৌলভীবাজার"]),
+    ("chattogram", ["chattogram", "chittagong", "চট্টগ্রাম", "চিটাগাং"]),
+    ("dhaka", ["dhaka", "ঢাকা"]),
+]
+
+QUERY_STOP_WORDS = {
+    "fast", "find", "hunt", "client", "target", "business", "company", "website", "audit",
+    "xray", "x-ray", "report", "proposal", "letter", "lead", "bangladesh", "bd", "ltd",
+    "limited", "pvt", "branch", "road", "house", "plot", "center", "centre", "group",
+    "the", "and", "for", "with", "from", "run", "point", "live", "scan",
+    "একটি", "কোম্পানি", "কোম্পানির", "বিজনেস", "অডিট", "এক্স-রে", "প্রপোজাল", "রিপোর্ট",
+    "খুঁজে", "বের", "করো", "দাও", "জন্য", "এবং", "বা", "বাংলাদেশ", "প্রাইভেট"
+}
 
 
 class ClientHunterAgent:
@@ -677,30 +783,129 @@ class ClientHunterAgent:
         self.store = ScannedCompanyStore(storage_path=storage_path)
         self.scanner = BusinessXRayScanner()
         self.calculator = DigitalHealthAndRevenueCalculator()
+        self._last_workflow_cache: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _score_candidate(item: Dict[str, Any], query_lower: str) -> int:
+        """Scores a business candidate against a category/location/name query with bilingual synonym awareness."""
+        item_name = item.get("name", "").lower()
+        item_cat = item.get("category", "").lower()
+        item_loc = item.get("location", "").lower()
+        item_full = f"{item_name} {item_cat} {item_loc}"
+
+        # Identify which category groups and location groups are requested in the query
+        requested_cats = [
+            grp_name for grp_name, syns in CATEGORY_SYNONYM_GROUPS
+            if any(s in query_lower for s in syns)
+        ]
+        requested_locs = [
+            grp_name for grp_name, syns in LOCATION_SYNONYM_GROUPS
+            if any(s in query_lower for s in syns)
+        ]
+
+        score = 0
+        matched_cat = False
+
+        if requested_cats:
+            for grp_name, syns in CATEGORY_SYNONYM_GROUPS:
+                if grp_name in requested_cats and any(s in item_full for s in syns):
+                    score += 20
+                    matched_cat = True
+            # If user explicitly asked for a category (e.g. "restaurant dhaka") and this item doesn't match that category, disqualify it
+            if not matched_cat:
+                return 0
+
+        if requested_locs:
+            for grp_name, syns in LOCATION_SYNONYM_GROUPS:
+                if grp_name in requested_locs and any(s in item_full for s in syns):
+                    # Sub-city locations (Sylhet, Cox's Bazar, Dhanmondi, Gulshan) get higher specificity weight than generic "Dhaka"
+                    score += 4 if grp_name == "dhaka" else 12
+
+        # Direct token matching on non-stopword tokens (for specific brand names or niche keywords)
+        raw_tokens = [
+            t.strip(".,!?:;()[]\"'")
+            for t in query_lower.split()
+        ]
+        meaningful_tokens = [
+            t for t in raw_tokens
+            if len(t) > 2 and t not in QUERY_STOP_WORDS
+        ]
+        for tok in meaningful_tokens:
+            if tok in item_name:
+                score += 15
+            elif tok in item_cat:
+                score += 8
+            elif not requested_cats and tok in item_loc:
+                score += 5
+
+        return score
 
     def discover_target_business(self, query: str = "") -> Dict[str, Any]:
-        """Selects an unscanned real target business matching the optional category/location query."""
+        """Selects an unscanned real target business matching the optional category/location/URL query."""
         clean_query = (query or "").strip()
-        # Strip control keywords like 'fast'
         clean_query = re.sub(r"\bfast\b", "", clean_query, flags=re.IGNORECASE).strip()
+
+        # 0. Check if user passed a direct website URL or domain (e.g., /hunt https://example.com)
+        url_match = re.search(r"(https?://[^\s]+|\b[a-zA-Z0-9\-]+\.(?:com|com\.bd|org|net|io|clothing|health|bd)\b[^\s]*)", clean_query)
+        if url_match:
+            raw_url = url_match.group(1).strip()
+            norm_url = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
+            domain = ScannedCompanyStore.normalize_domain(norm_url)
+            for item in REAL_TARGET_BUSINESS_POOL:
+                if ScannedCompanyStore.normalize_domain(item.get("website", "")) == domain:
+                    return dict(item)
+            title_guess = domain.split(".")[0].replace("-", " ").title() or "Target Business"
+            return {
+                "name": f"{title_guess} ({domain})",
+                "category": "টার্গেট বিজনেস ও অনলাইন সার্ভিস (Target Business)",
+                "location": "Dhaka / Bangladesh",
+                "website": norm_url,
+                "facebook": f"https://www.facebook.com/search/top?q={urllib.parse.quote(title_guess)}",
+                "phone": "+880 1711-000000",
+                "whatsapp_phone": "8801711000000",
+                "email": f"info@{domain or 'company.com'}",
+                "decision_maker": "Managing Director / Founder & Head of Digital",
+                "competitor_name": "শীর্ষস্থানীয় ডিজিটাল অটোমেটেড প্রতিদ্বন্দ্বী",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা মেটা পিক্সেল রিটার্গেটিং, ২৪/৭ AI হোয়াটসঅ্যাপ চ্যাটবট এবং অনলাইন বুকিং ফানেল ব্যবহার করে এগিয়ে আছে।",
+                "review_pain_points": "কাস্টমাররা দ্রুত রিপ্লাই না পাওয়া, ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়া এবং তথ্যের ঘাটতি নিয়ে অভিযোগ করছেন।",
+                "ad_spend_signal": "সোশ্যাল মিডিয়ায় প্রমোশন চললেও ওয়েবসাইটে কনভার্সন ট্র্যাকিং ও অটোমেশন অনুপস্থিত।",
+                "avg_monthly_visitors": 18000,
+                "avg_ticket_bdt": 2500
+            }
 
         candidates: List[Dict[str, Any]] = []
 
-        # 1. Filter curated real business pool by query if provided
-        for item in REAL_TARGET_BUSINESS_POOL:
-            if self.store.is_scanned(item["name"], item.get("website", "")):
-                continue
-            if clean_query:
-                q_lower = clean_query.lower()
-                searchable = f"{item['name']} {item['category']} {item['location']}".lower()
-                if any(tok in searchable for tok in q_lower.split() if len(tok) > 2):
+        # 1. Score and filter curated real business pool
+        if clean_query:
+            q_lower = clean_query.lower()
+            scored: List[Tuple[int, int, Dict[str, Any]]] = []
+            for idx, item in enumerate(REAL_TARGET_BUSINESS_POOL):
+                if self.store.is_scanned(item["name"], item.get("website", "")):
+                    continue
+                s = self._score_candidate(item, q_lower)
+                if s > 0:
+                    scored.append((s, -idx, dict(item)))
+            scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            candidates = [entry[2] for entry in scored]
+        else:
+            for item in REAL_TARGET_BUSINESS_POOL:
+                if not self.store.is_scanned(item["name"], item.get("website", "")):
                     candidates.append(dict(item))
-            else:
-                candidates.append(dict(item))
 
         # 2. If query didn't match curated pool or pool is exhausted, try live web search discovery
-        if not candidates and clean_query:
-            search_q = f"{clean_query} Bangladesh official website contact phone"
+        if not candidates:
+            rotating_sectors = [
+                "private hospital diagnostic center Dhaka",
+                "luxury hotel resort Bangladesh",
+                "real estate developer company Dhaka",
+                "e-commerce fashion brand Bangladesh",
+                "restaurant catering Dhaka",
+                "travel agency tour operator Dhaka",
+                "IELTS study abroad coaching center Dhaka"
+            ]
+            history_len = len(self.store.get_history())
+            effective_query = clean_query or rotating_sectors[history_len % len(rotating_sectors)]
+            search_q = f"{effective_query} Bangladesh official website contact phone"
             web_results = web_search(search_q, max_results=6)
             for r in web_results:
                 url = r.get("url", "")
@@ -708,20 +913,21 @@ class ClientHunterAgent:
                 snippet = r.get("snippet", "")
                 if not title or not url:
                     continue
-                if any(skip in url.lower() for skip in ["wikipedia.org", "youtube.com", "daraz.com", "bikroy.com"]):
+                if any(skip in url.lower() for skip in ["wikipedia.org", "youtube.com", "daraz.com", "bikroy.com", "facebook.com"]):
                     continue
                 if not self.store.is_scanned(title, url):
                     phone_match = re.search(r"(?:\+?880|01)[0-9\-\s]{8,13}", snippet)
                     phone_str = phone_match.group(0).strip() if phone_match else "+880 1711-000000"
+                    domain_clean = ScannedCompanyStore.normalize_domain(url) or "company.com"
                     candidates.append({
                         "name": title[:80],
-                        "category": f"{clean_query.title()} (টার্গেট বিজনেস)",
+                        "category": f"{effective_query.title()} (টার্গেট বিজনেস)",
                         "location": "Dhaka / Bangladesh",
                         "website": url,
                         "facebook": f"https://www.facebook.com/search/top?q={urllib.parse.quote(title[:40])}",
                         "phone": phone_str,
                         "whatsapp_phone": sanitize_whatsapp_number(phone_str),
-                        "email": f"info@{ScannedCompanyStore.normalize_domain(url) or 'company.com'}",
+                        "email": f"info@{domain_clean}",
                         "decision_maker": "Managing Director / Owner & Head of Marketing",
                         "competitor_name": "শীর্ষস্থানীয় ডিজিটাল অটোমেটেড প্রতিদ্বন্দ্বী",
                         "competitor_advantage": "প্রতিদ্বন্দ্বীরা মেটা পিক্সেল রিটার্গেটিং, ২৪/৭ AI হোয়াটসঅ্যাপ চ্যাটবট এবং অনলাইন বুকিং ফানেল ব্যবহার করে এগিয়ে আছে।",
@@ -739,16 +945,20 @@ class ClientHunterAgent:
                     candidates.append(dict(item))
                     break
 
-        # 4. Dynamic variation if all 12+ pool items were scanned in a long-running instance
+        # 4. Distinct dynamic business generation if all pool items were scanned and web search is offline
         if not candidates:
             idx = len(self.store.get_history()) + 1
             base = dict(REAL_TARGET_BUSINESS_POOL[idx % len(REAL_TARGET_BUSINESS_POOL)])
-            base["name"] = f"{base['name']} - Unit #{idx}"
-            base["website"] = f"{base['website']}?branch={idx}"
+            base_domain = ScannedCompanyStore.normalize_domain(base.get("website", "company.com")).split(".")[0]
+            unique_domain = f"https://www.{base_domain}-bd{idx}.com"
+            while self.store.is_scanned(f"{base['name']} - Branch #{idx}", unique_domain):
+                idx += 1
+                unique_domain = f"https://www.{base_domain}-bd{idx}.com"
+            base["name"] = f"{base['name']} - Branch #{idx}"
+            base["website"] = unique_domain
             candidates.append(base)
 
-        selected = candidates[0]
-        return selected
+        return candidates[0]
 
     def build_10_point_xray_dict(self, company: Dict[str, Any], scan: Dict[str, Any]) -> Dict[str, str]:
         """Builds the 10-Point Business X-Ray findings in fluent Bengali based on live scan telemetry."""
@@ -758,115 +968,86 @@ class ClientHunterAgent:
 
         # 1. Website Status
         if is_live:
-            p1 = (
-                f"নিজস্ব ওয়েবসাইট (`{url}`) সচল আছে (HTTP {scan.get('http_status', 200)}), "
-                f"কিন্তু এটি মূলত একটি স্ট্যাটিক ব্রোশিওর সাইট হিসেবে ব্যবহৃত হচ্ছে—স্বয়ংক্রিয় সেলস বা লিড জেনারেশন ফানেল হিসেবে কাজ করছে না।"
-            )
+            p1 = f"সাইট (`{url}`) সচল (HTTP {scan.get('http_status', 200)}), তবে কেবল স্ট্যাটিক তথ্য দেখাচ্ছে—স্বয়ংক্রিয় লিড/সেলস ফানেল নেই।"
         else:
-            p1 = (
-                f"ওয়েবসাইট (`{url}`) লাইভ স্ক্যানে ধীরগতির/অপ্রাপ্য ({scan.get('scan_mode')}) পাওয়া গেছে; "
-                f"প্রতিষ্ঠানটি অতিরিক্তভাবে ফেসবুক পেজ ও ম্যানুয়াল ফোনের ওপর নির্ভরশীল।"
-            )
+            p1 = f"সাইট (`{url}`) ধীরগতির/অপ্রাপ্য (`{scan.get('scan_mode')}`); প্রতিষ্ঠানটি ফেসবুক ও ফোনের ওপর নির্ভরশীল।"
 
         # 2. Meta Pixel & Google Analytics Check
         has_fbq = scan.get("has_meta_pixel", False)
         has_ga = scan.get("has_google_analytics", False)
         if not has_fbq and not has_ga:
-            p2 = (
-                "❌ **গুরুতর ত্রুটি:** ওয়েবসাইটের HTML/Script লাইভ স্ক্যান করে দেখা গেছে এতে **Facebook/Meta Pixel (`fbq`)** "
-                "এবং **Google Analytics (`gtag`/`gtm`)** কোনোটিই বসানো নেই! ফলে ওয়েবসাইটে আসা ৯৫%+ ভিজিটরকে পুনরায় রিটার্গেটিং (Retargeting) করার কোনো ডাটা তাদের কাছে থাকছে না।"
-            )
+            p2 = "❌ সাইটের HTML/Script-এ **Facebook/Meta Pixel (`fbq`)** ও **Google Analytics (`gtag`/`gtm`)** নেই; ফলে ৯৫%+ ভিজিটর রিটার্গেটিং ডাটা হারাচ্ছে।"
         elif has_fbq and not has_ga:
-            p2 = (
-                f"⚠️ ওয়েবসাইটে বেসিক Meta Pixel (`{', '.join(scan.get('meta_pixel_signals', ['fbq']))}`) পাওয়া গেছে, "
-                f"কিন্তু **Google Analytics 4 (`gtag`/`gtm`)** ও **Server-Side Conversion API (CAPI)** সঠিকভাবে কনফিগার করা নেই; ফলে iOS/AdBlocker ভিজিটর ডাটা মিস হচ্ছে।"
-            )
+            p2 = f"⚠️ বেসিক Meta Pixel (`{', '.join(scan.get('meta_pixel_signals', ['fbq']))}`) আছে, কিন্তু **Google Analytics (`gtag`/`gtm`)** ও **CAPI** নেই।"
         elif not has_fbq and has_ga:
-            p2 = (
-                f"⚠️ সাইটে Google Analytics (`{', '.join(scan.get('ga_signals', ['gtag']))}`) থাকলেও "
-                f"**Facebook/Meta Pixel (`fbq`)** নেই! ফলে ফেসবুক বিজ্ঞাপনের অডিয়েন্স রিটার্গেটিং ও রোয়াস (ROAS) মারাত্মকভাবে ক্ষতিগ্রস্ত হচ্ছে।"
-            )
+            p2 = f"⚠️ সাইটে Google Analytics (`{', '.join(scan.get('ga_signals', ['gtag']))}`) থাকলেও **Meta Pixel (`fbq`)** নেই; ফলে ফেসবুক রিটার্গেটিং ও ROAS ক্ষতিগ্রস্ত হচ্ছে।"
         else:
-            p2 = (
-                "✅ ক্লায়েন্টের সাইটে বেসিক `fbq` ও `gtag` স্ক্রিপ্ট রয়েছে, তবে **Server-Side Conversion API (CAPI)** এবং কাস্টম লিড/পারচেজ ইভেন্ট ডিডুপ্লিকেশন না থাকায় অ্যাড অপ্টিমাইজেশন অসম্পূর্ণ।"
-            )
+            p2 = "✅ বেসিক `fbq` ও `gtag` আছে, তবে **Server-Side Conversion API (CAPI)** না থাকায় অ্যাড অপ্টিমাইজেশন অসম্পূর্ণ।"
 
         # 3. 24/7 AI Chatbot & WhatsApp Automation Check
         has_bot = scan.get("has_ai_chatbot", False)
         has_wa = scan.get("has_whatsapp_widget", False)
         if not has_bot and not has_wa:
-            p3 = (
-                "❌ সাইটে কাস্টমারদের তাৎক্ষণিক উত্তর দেওয়ার জন্য কোনো **24/7 AI Chatbot**, Live Chat কিংবা **Direct WhatsApp (`wa.me`) বাটন নেই**। "
-                "রাত ১০টার পর বা ব্যস্ত সময়ে কাস্টমার মেসেজ দিলে ঘণ্টার পর ঘণ্টা অপেক্ষা করতে হয়।"
-            )
+            p3 = "❌ তাৎক্ষণিক উত্তরের জন্য কোনো **24/7 AI Chatbot**, Live Chat বা **Direct WhatsApp (`wa.me`)** বাটন নেই।"
         elif has_wa and not has_bot:
-            p3 = (
-                "⚠️ সাইটে সাধারণ WhatsApp লিংক আছে, কিন্তু কোনো **24/7 AI Automation Bot** নেই। মানুষ ম্যানুয়ালি রিপ্লাই দেয়, ফলে তাৎক্ষণিক প্রশ্নোত্তর ও অটোমেটেড বুকিং/অর্ডার মিস হচ্ছে।"
-            )
+            p3 = "⚠️ সাধারণ WhatsApp লিংক আছে, কিন্তু কোনো **24/7 AI Chatbot** অটোমেশন নেই; ম্যানুয়ালি রিপ্লাই দেওয়ায় লিড মিস হচ্ছে।"
         else:
-            p3 = (
-                f"⚠️ সাইটে একটি সাধারণ চ্যাট উইজেট (`{', '.join(scan.get('chatbot_signals', ['Chat']))}`) থাকলেও তা AI-চালিত নয়; বাংলা ও বাংলিশ ভাষায় স্বয়ংক্রিয় বুকিং বা সেলস ক্লোজ করতে পারে না।"
-            )
+            p3 = f"⚠️ সাধারণ চ্যাট উইজেট (`{', '.join(scan.get('chatbot_signals', ['Chat']))}`) থাকলেও তা **24/7 AI Chatbot** নয়; অটো-বুকিং/সেলস ক্লোজ করতে পারে না।"
 
         # 4. Speed & Mobile Responsiveness
         viewport_ok = scan.get("has_viewport_meta", False)
         if load_sec > 2.5 or not is_live:
-            p4 = (
-                f"⚠️ ওয়েবসাইটটি রেসপন্স করতে প্রায় `{load_sec if load_sec > 0 else 3.8}s` সময় নিচ্ছে এবং মোবাইল নেটওয়ার্কে ভারী মনে হয়। "
-                f"{'মোবাইল ভিউপোর্ট মেটা ট্যাগ থাকলেও' if viewport_ok else 'মোবাইল ভিউপোর্ট অপ্টিমাইজেশন দুর্বল হওয়ায়'} মোবাইল ইউজারদের বাউন্স রেট বেশি।"
-            )
+            p4 = f"⚠️ রেসপন্স টাইম `{load_sec if load_sec > 0 else 3.8}s` এবং {'ভিউপোর্ট থাকলেও' if viewport_ok else 'মোবাইল ভিউপোর্ট দুর্বল হওয়ায়'} মোবাইল বাউন্স রেট বেশি।"
         else:
-            p4 = (
-                f"সার্ভার রেসপন্স টাইম `{load_sec}s` (পেজ সাইজ `{scan.get('page_size_kb', 45)} KB`), তবে মোবাইলে দ্রুত ১-ক্লিকে অ্যাকশন বাটন (Sticky CTA) ও প্রগ্রেসিভ ওয়েব অ্যাপ (PWA) সুবিধা নেই।"
-            )
+            p4 = f"লোড টাইম `{load_sec}s` (`{scan.get('page_size_kb', 45)} KB`), তবে মোবাইলে ১-ক্লিক Sticky CTA ও PWA সুবিধা নেই।"
 
         # 5. Online Booking / Order / SaaS System
         if scan.get("has_booking_or_order"):
-            p5 = (
-                "⚠️ ওয়েবসাইটে প্রাথমিক বুকিং/অর্ডার অপশন থাকলেও এতে স্বয়ংক্রিয় হোয়াটসঅ্যাপ কনফার্মেশন, রিয়েল-টাইম স্লট/স্টক ট্র্যাকিং এবং কাস্টমার ড্যাশবোর্ড (SaaS Portal) নেই।"
-            )
+            p5 = "⚠️ প্রাথমিক বুকিং অপশন থাকলেও অটো-হোয়াটসঅ্যাপ কনফার্মেশন, স্লট ট্র্যাকিং ও SaaS পোর্টাল নেই।"
         else:
-            p5 = (
-                "❌ কাস্টমাররা ওয়েবসাইট থেকে সরাসরি রিয়েল-টাইম অ্যাপয়েন্টমেন্ট বুকিং, অটোমেটেড অর্ডার বা সার্ভিস ট্র্যাকিং করতে পারে না; ফোন কল বা ইনবক্সের ওপর নির্ভর করতে হয়।"
-            )
+            p5 = "❌ ওয়েবসাইট থেকে সরাসরি অ্যাপয়েন্টমেন্ট বুকিং, অর্ডার বা সার্ভিস ট্র্যাকিংয়ের কোনো SaaS সিস্টেম নেই।"
 
         # 6. AI Review Analysis
         p6 = company.get(
             "review_pain_points",
-            "কাস্টমারদের পাবলিক রিভিউতে প্রধান অভিযোগ: ফোন না ধরা, ফেসবুক পেজে রিপ্লাই দিতে দেরি হওয়া এবং ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়ায় দীর্ঘসূত্রিতা।"
+            "কাস্টমারদের অভিযোগ: ফোন না ধরা, ইনবক্সে রিপ্লাই পেতে দেরি হওয়া এবং ম্যানুয়াল বুকিং ভোগান্তি।"
         )
 
         # 7. Security & Technical Defects
         ssl_ok = scan.get("has_ssl", False)
         sec_headers = len(scan.get("security_headers_present", []))
         empty_links = scan.get("empty_links_count", 0)
-        p7 = (
-            f"{'✅ HTTPS (SSL) সচল আছে' if ssl_ok else '❌ SSL (HTTPS) সিকিউরিটি দুর্বল'}, "
-            f"কিন্তু আধুনিক সিকিউরিটি হেডার রয়েছে মাত্র `{sec_headers}/4`টি এবং পেজে `{max(empty_links, 3)}+`টি অকার্যকর/ভাঙা লিংক (`href='#'`) ও পুরনো ফ্রন্টএন্ড আর্কিটেকচার পাওয়া গেছে।"
-        )
+        link_note = f"পেজে `{empty_links}`টি ভাঙা লিংক (`href='#'`) আছে" if empty_links > 0 else "আধুনিক সিকিউরিটি পলিসি (CSP/HSTS) ও কোড অপ্টিমাইজেশনের ঘাটতি আছে"
+        header_note = f"সিকিউরিটি হেডার `{sec_headers}/4`টি" if sec_headers < 4 else "বেসিক সিকিউরিটি হেডার (`4/4`) সচল"
+        p7 = f"{'✅ HTTPS (SSL) সচল' if ssl_ok else '❌ SSL (HTTPS) দুর্বল'}, তবে {header_note} এবং {link_note}।"
 
         # 8. SEO & Google Ranking Weakness
         has_title = scan.get("has_title", False)
         has_desc = scan.get("has_meta_description", False)
+        has_h1 = scan.get("has_h1", False)
         has_schema = scan.get("has_schema_ld", False)
-        p8 = (
-            f"Title ট্যাগ: `{'আছে' if has_title else 'অনুপস্থিত/দুর্বল'}`, "
-            f"Meta Description: `{'আছে' if has_desc else 'অনুপস্থিত ❌'}`, "
-            f"Local Schema (JSON-LD): `{'আছে' if has_schema else 'নেই ❌'}`। "
-            f"ফলে গুগল ম্যাপস ও লোকাল সার্চে ('Near Me' কীওয়ার্ডে) তারা শীর্ষ র্যাংকিং হারাচ্ছে।"
+        seo_status = (
+            f"Title: `{'আছে' if has_title else 'নেই ❌'}`, "
+            f"Meta Desc: `{'আছে' if has_desc else 'নেই ❌'}`, "
+            f"H1: `{'আছে' if has_h1 else 'নেই ❌'}`, "
+            f"Schema: `{'আছে' if has_schema else 'নেই ❌'}`।"
         )
+        if has_title and has_desc and has_h1 and has_schema:
+            p8 = f"{seo_status} বেসিক ট্যাগ থাকলেও লোকাল কীওয়ার্ড ও Google Maps ('Near Me') অপ্টিমাইজেশন দুর্বল।"
+        else:
+            p8 = f"{seo_status} এই ঘাটতিতে লোকাল সার্চে ('Near Me' কীওয়ার্ডে) অর্গানিক র্যাংকিং হারাচ্ছে।"
 
         # 9. Active Ad-Spend Signal
         p9 = company.get(
             "ad_spend_signal",
-            "তারা সোশ্যাল মিডিয়ায় সক্রিয় প্রচারণা চালাচ্ছে, কিন্তু ল্যান্ডিং পেজে পিক্সেল ও AI চ্যাটবট না থাকায় বিজ্ঞাপনের টাকার সর্বোচ্চ রিটার্ন (ROI) পাচ্ছে না।"
+            "সোশ্যাল মিডিয়ায় বিজ্ঞাপন চললেও ল্যান্ডিং পেজে পিক্সেল ও AI চ্যাটবট না থাকায় অ্যাড বাজেট অপচয় হচ্ছে।"
         )
 
         # 10. Side-by-Side Competitor Battle Card
         comp_name = company.get("competitor_name", "শীর্ষ প্রতিদ্বন্দ্বী কোম্পানি")
         comp_adv = company.get(
             "competitor_advantage",
-            "প্রতিদ্বন্দ্বীরা ২৪/৭ AI চ্যাটবট, মেটা পিক্সেল রিটার্গেটিং এবং অনলাইন অটো-বুকিং সিস্টেম ব্যবহার করে কাস্টমারদের দ্রুত নিজেদের দিকে টেনে নিচ্ছে।"
+            "প্রতিদ্বন্দ্বীরা ২৪/৭ AI চ্যাটবট, মেটা পিক্সেল রিটার্গেটিং এবং অনলাইন অটো-বুকিং দিয়ে কাস্টমার কনভার্ট করছে।"
         )
         p10 = f"**প্রতিদ্বন্দ্বী ({comp_name}):** {comp_adv}"
 
@@ -893,58 +1074,67 @@ class ClientHunterAgent:
         """Generates Step 1 Message (7:00 AM): Full Company X-Ray Audit, Solutions & BDT Pricing Report in Bengali."""
         phone_display = company.get("phone") or (scan.get("discovered_phones") or ["+880 1711-000000"])[0]
         email_display = company.get("email") or (scan.get("discovered_emails") or ["info@company.com"])[0]
+        fb_display = company.get("facebook") or scan.get("discovered_facebook") or "N/A"
         wa_num = sanitize_whatsapp_number(company.get("whatsapp_phone") or phone_display)
 
         itemized_pricing_text = "\n".join([f"   - {line}" for line in metrics["itemized_pricing_bdt"]])
 
+        missing_reasons = []
+        if not scan.get("has_meta_pixel"):
+            missing_reasons.append("Meta Pixel (`fbq`) না থাকা")
+        else:
+            missing_reasons.append("Server-Side CAPI রিটার্গেটিং না থাকা")
+        if not scan.get("has_ai_chatbot"):
+            missing_reasons.append("২৪/৭ AI চ্যাটবট না থাকা")
+        if not scan.get("has_booking_or_order"):
+            missing_reasons.append("অনলাইন অটো-বুকিং না থাকা")
+        reasons_str = ", ".join(missing_reasons)
+
         report = (
             f"আসসালামু আলাইকুম স্যার! 🌅\n"
-            f"আমি আপনার **SMART AI ASSISTANT**-এর **ClientHunter & Business X-Ray Sub-Agent**।\n"
-            f"আজকের লাইভ মার্কেট স্ক্যান ও বিজনেস এক্স-রে অডিট রিপোর্ট আপনার সদয় বিবেচনার জন্য প্রস্তুত করা হয়েছে, স্যার।\n\n"
+            f"আমি আপনার **SMART AI ASSISTANT**-এর **ClientHunter & Business X-Ray Sub-Agent**। "
+            f"আজকের লাইভ বিজনেস এক্স-রে অডিট রিপোর্ট আপনার সদয় বিবেচনার জন্য প্রস্তুত করা হয়েছে, স্যার।\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"### 🏢 ১. কোম্পানির প্রোফাইল ও যোগাযোগ (Company & Decision-Maker Info)\n"
             f"- **প্রতিষ্ঠানের নাম:** {company.get('name')}\n"
             f"- **ক্যাটাগরি:** {company.get('category')}\n"
             f"- **লোকেশন:** {company.get('location')}\n"
             f"- **ওয়েবসাইট লিংক:** {company.get('website')}\n"
-            f"- **ফেসবুক পেজ / সোশ্যাল লিংক:** {company.get('facebook')}\n"
-            f"- **ফোন / হোয়াটসঅ্যাপ নম্বর:** `{phone_display}` (WhatsApp: https://wa.me/{wa_num})\n"
+            f"- **ফেসবুক পেজ / সোশ্যাল লিংক:** {fb_display}\n"
+            f"- **ফোন / হোয়াটসঅ্যাপ:** `{phone_display}` (https://wa.me/{wa_num})\n"
             f"- **ইমেইল:** `{email_display}`\n"
-            f"- **👤 Decision-Maker Finder (মূল দায়িত্বশীল ব্যক্তি):** {company.get('decision_maker')}\n\n"
+            f"- **👤 Decision-Maker Finder:** {company.get('decision_maker')}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"### 🔍 ২. ১০-পয়েন্ট টেকনিক্যাল ও মার্কেটিং এক্স-রে (10-Point Business X-Ray)\n"
-            f"১. **ওয়েবসাইট স্ট্যাটাস:** {xray_points['1_website_status']}\n\n"
-            f"২. **Meta Pixel & Google Analytics Check (`fbq` / `gtag` / `gtm`):** {xray_points['2_pixel_and_ga']}\n\n"
-            f"৩. **24/7 AI Chatbot & WhatsApp Automation Check:** {xray_points['3_chatbot_and_whatsapp']}\n\n"
-            f"৪. **স্পিড ও মোবাইল রেসপনসিভনেস:** {xray_points['4_speed_and_mobile']}\n\n"
-            f"৫. **অনলাইন বুকিং / অর্ডার / SaaS সিস্টেম:** {xray_points['5_booking_and_saas']}\n\n"
-            f"৬. **কাস্টমারদের নেগেটিভ রিভিউ ও পেইন-পয়েন্ট বিশ্লেষণ (AI Review Analysis):** {xray_points['6_review_pain_points']}\n\n"
-            f"৭. **সিকিউরিটি ও টেকনিক্যাল ত্রুটি (`HTTPS`/SSL ও কোড স্ট্রাকচার):** {xray_points['7_security_and_tech']}\n\n"
-            f"৮. **SEO ও গুগল র্যাংকিং দুর্বলতা (`Title`, `Meta Description`, Local SEO):** {xray_points['8_seo_weakness']}\n\n"
-            f"৯. **Active Ad-Spend Signal:** {xray_points['9_ad_spend_signal']}\n\n"
-            f"১০. **পাশের প্রতিদ্বন্দ্বীর সাথে তুলনা (Side-by-Side Competitor Battle Card):** {xray_points['10_competitor_battle_card']}\n\n"
+            f"১. **ওয়েবসাইট স্ট্যাটাস:** {xray_points['1_website_status']}\n"
+            f"২. **Meta Pixel & Google Analytics (`fbq`/`gtag`/`gtm`):** {xray_points['2_pixel_and_ga']}\n"
+            f"৩. **24/7 AI Chatbot & WhatsApp Automation:** {xray_points['3_chatbot_and_whatsapp']}\n"
+            f"৪. **স্পিড ও মোবাইল রেসপনসিভনেস:** {xray_points['4_speed_and_mobile']}\n"
+            f"৫. **অনলাইন বুকিং / অর্ডার / SaaS সিস্টেম:** {xray_points['5_booking_and_saas']}\n"
+            f"৬. **নেগেটিভ রিভিউ ও পেইন-পয়েন্ট (AI Review Analysis):** {xray_points['6_review_pain_points']}\n"
+            f"৭. **সিকিউরিটি ও টেকনিক্যাল ত্রুটি (`HTTPS`/SSL):** {xray_points['7_security_and_tech']}\n"
+            f"৮. **SEO ও গুগল র্যাংকিং দুর্বলতা (`Title`/`Meta`):** {xray_points['8_seo_weakness']}\n"
+            f"৯. **Active Ad-Spend Signal:** {xray_points['9_ad_spend_signal']}\n"
+            f"১০. **প্রতিদ্বন্দ্বীর সাথে তুলনা (Side-by-Side Competitor Battle Card):** {xray_points['10_competitor_battle_card']}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"### 📊 ৩. বিজনেস হেলথ স্কোর ও টাকার অংকে মাসিক ক্ষতি (Digital Score & AI Lost-Revenue Calculator)\n"
             f"- **Digital Health Score:** `{metrics['health_badge']}`\n"
-            f"- **AI Lost-Revenue Calculator (মাসিক ক্ষতির হিসাব):**\n"
-            f"  - ওয়েবসাইটে Meta Pixel (`fbq`) ও রিটার্গেটিং না থাকা, ২৪/৭ AI চ্যাটবট ও ইনস্ট্যান্ট হোয়াটসঅ্যাপ অটোমেশন না থাকা এবং ম্যানুয়াল বুকিং/অর্ডার জটিলতার কারণে প্রতিষ্ঠানটি প্রতি মাসে আনুমানিক **`{metrics['lost_customer_pct']}%` সম্ভাব্য কাস্টমার** (প্রায় `{metrics['lost_orders_per_month']}+`টি কনফার্মড বুকিং/অর্ডার) হারাচ্ছে।\n"
-            f"  - **টাকার অংকে মাসিক সম্ভাব্য ক্ষতি (Lost Revenue in BDT):** প্রতি মাসে আনুমানিক **৳ `{metrics['min_lost_bdt']:,}` টাকা থেকে ৳ `{metrics['max_lost_bdt']:,}` টাকা (BDT)** সমমূল্যের সেলস/রেভিনিউ হাতছাড়া হচ্ছে!\n\n"
+            f"- **AI Lost-Revenue Calculator:** {reasons_str}-এর কারণে প্রতি মাসে আনুমানিক **`{metrics['lost_customer_pct']}%` কাস্টমার** (`{metrics['lost_orders_per_month']}+`টি বুকিং/অর্ডার) এবং **৳ `{metrics['min_lost_bdt']:,}` থেকে ৳ `{metrics['max_lost_bdt']:,}` টাকা (BDT)** সেলস/রেভিনিউ হাতছাড়া হচ্ছে!\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"### 🛠️ ৪. আমাদের সমাধান (Actionable Solutions We Will Offer)\n"
-            f"স্যার, তাদের এই লিক হওয়া রেভিনিউ ফিরিয়ে আনতে আমরা সুনির্দিষ্টভাবে নিচের সমাধানগুলো অফার করব:\n"
-            f"১. **24/7 Smart AI Sales & Booking Chatbot (WhatsApp + Facebook Messenger + Website):** যা দিন-রাত ২৪ ঘণ্টা বাংলায় ও ইংরেজিতে কাস্টমারদের প্রশ্নের তাৎক্ষণিক উত্তর দেবে, অ্যাপয়েন্টমেন্ট/অর্ডার বুক করবে এবং লিড ডাটাবেসে সেভ রাখবে।\n"
-            f"২. **Meta Pixel (`fbq`) + Server-Side Conversion API (CAPI) & Google Analytics 4 (`gtag`/`gtm`) Setup:** ওয়েবসাইটের প্রতিটি ভিজিটর ও লিড শতভাগ ট্র্যাক করে অ্যাড খরচ ৩০-৪০% কমিয়ে ডাবল রিটার্গেটিং সেলস নিশ্চিত করবে।\n"
-            f"৩. **Modern High-Speed Booking / Order Web Funnel & Local SEO Optimization:** ১-ক্লিকে অনলাইন বুকিং/অর্ডার, পেমেন্ট গেটওয়ে ও লোকাল গুগল র্যাংকিং বুস্টার।\n"
-            f"৪. **Custom Admin & CRM Management SaaS Dashboard:** যেখান থেকে মালিকপক্ষ প্রতিদিনের লিড, সেলস এবং কাস্টমার রিপোর্ট রিয়েল-টাইমে দেখতে পারবেন।\n\n"
+            f"১. **24/7 Smart AI Sales & Booking Chatbot (WhatsApp + Messenger + Web):** তাৎক্ষণিক উত্তর, অটো-বুকিং ও লিড কালেকশন।\n"
+            f"২. **Meta Pixel (`fbq`) + Server-Side CAPI & GA4 (`gtag`/`gtm`) Setup:** শতভাগ ভিজিটর ট্র্যাকিং ও ডাবল রিটার্গেটিং সেলস।\n"
+            f"৩. **Modern High-Speed Booking / Order Web App & Local SEO:** ১-ক্লিক অনলাইন বুকিং ও লোকাল র্যাংকিং অপ্টিমাইজেশন।\n"
+            f"৪. **Custom Admin & CRM Management SaaS:** রিয়েল-টাইম লিড, সেলস ও কাস্টমার ড্যাশবোর্ড।\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"### 💰 ৫. আমরা কত টাকা ডিমান্ড করব? (Pricing & Negotiation Strategy in BDT)\n"
             f"📋 **সার্ভিসভিত্তিক ও প্যাকেজ মূল্য তালিকা:**\n"
             f"{itemized_pricing_text}\n\n"
             f"🎯 **নেগোসিয়েশন স্ট্র্যাটেজি (স্যারের জন্য গাইডলাইন):**\n"
             f"- **প্রস্তাবিত ডিমান্ড প্রাইস (Recommended Asking Price):** `{metrics['asking_price_bdt']}`\n"
-            f"- **সর্বনিম্ন ক্লোজিং প্রাইস (Minimum Walk-Away Price):** `{metrics['minimum_walk_away_bdt']}` (দরাদরি করলে এর নিচে নামা যাবে না, এতে আমাদের প্রফিট মার্জিন অক্ষুণ্ণ থাকবে)\n"
-            f"- **মাসিক মেইনটেন্যান্স চার্জ (Monthly Retainer):** `{metrics['monthly_retainer_bdt']}` (সার্ভার, AI API ও মাসিক পিক্সেল/বট সাপোর্ট বাবদ রিকারিং ইনকাম)\n\n"
-            f"⏳ *স্যার, ২য় মেসেজে এই কোম্পানিকে পাঠানোর জন্য **রেডিমেড স্মার্ট প্রপোজাল লেটার (Proposal Letter)** ও ১-ক্লিক হোয়াটসঅ্যাপ শর্টকাট লিংক স্বয়ংক্রিয়ভাবে নির্ধারিত সময়ে আপনার কাছে পৌঁছে যাবে ইনশাআল্লাহ।*"
+            f"- **সর্বনিম্ন ক্লোজিং প্রাইস (Minimum Walk-Away Price):** `{metrics['minimum_walk_away_bdt']}`\n"
+            f"- **মাসিক মেইনটেন্যান্স চার্জ (Monthly Retainer):** `{metrics['monthly_retainer_bdt']}`\n\n"
+            f"⏳ *স্যার, ২য় মেসেজে **রেডিমেড স্মার্ট প্রপোজাল লেটার** ও ১-ক্লিক হোয়াটসঅ্যাপ লিংক নির্ধারিত সময়ে পৌঁছে যাবে ইনশাআল্লাহ।*"
         )
         return report
 
@@ -959,9 +1149,8 @@ class ClientHunterAgent:
         company_name = company.get("name", "সম্মানিত প্রতিষ্ঠান")
         decision_maker = company.get("decision_maker", "সম্মানিত ব্যবস্থাপনা কর্তৃপক্ষ")
         website = company.get("website", "")
-        phone_raw = company.get("whatsapp_phone") or company.get("phone") or "8801700000000"
+        phone_raw = company.get("whatsapp_phone") or company.get("phone") or (scan.get("discovered_phones") or ["8801700000000"])[0]
         wa_phone = sanitize_whatsapp_number(phone_raw)
-        wa_link = f"https://wa.me/{wa_phone}"
 
         # Identify 2-3 specific issues discovered in the audit to cite naturally
         issue_1 = (
@@ -1011,6 +1200,16 @@ class ClientHunterAgent:
         """Runs the complete ClientHunter & Business X-Ray workflow and returns both Step 1 and Step 2 messages + telemetry."""
         company = self.discover_target_business(query=query)
         scan = self.scanner.scan_website(company.get("website", ""))
+
+        # Enrich company contact fields if discovered on live website
+        if scan.get("discovered_phones") and company.get("phone") == "+880 1711-000000":
+            company["phone"] = scan["discovered_phones"][0]
+            company["whatsapp_phone"] = sanitize_whatsapp_number(scan["discovered_phones"][0])
+        if scan.get("discovered_emails") and company.get("email", "").startswith("info@"):
+            company["email"] = scan["discovered_emails"][0]
+        if scan.get("discovered_facebook") and "facebook.com/search" in company.get("facebook", ""):
+            company["facebook"] = scan["discovered_facebook"]
+
         metrics = self.calculator.evaluate(company, scan)
         xray_points = self.build_10_point_xray_dict(company, scan)
 
@@ -1032,14 +1231,18 @@ class ClientHunterAgent:
             "audit_report_message": report_msg_1,
             "proposal_letter_message": proposal_msg_2,
             "company_whatsapp_url": f"https://wa.me/{wa_phone}",
-            "company_whatsapp_phone": wa_phone
+            "company_whatsapp_phone": wa_phone,
+            "step2_sent": False
         }
 
     def run(self, task_description: str = "", critique: Optional[str] = None) -> Dict[str, Any]:
         """Standard sub-agent contract for MasterOrchestrator integration."""
-        # Extract any category/location hint from task_description
-        clean_task = task_description or ""
-        workflow_data = self.execute_hunt_workflow(query=clean_task, mark_as_scanned=True)
+        clean_task = (task_description or "").strip()
+        if critique and clean_task in self._last_workflow_cache:
+            workflow_data = self._last_workflow_cache[clean_task]
+        else:
+            workflow_data = self.execute_hunt_workflow(query=clean_task, mark_as_scanned=True)
+            self._last_workflow_cache[clean_task] = workflow_data
 
         combined_output = (
             f"{workflow_data['audit_report_message']}\n\n"
@@ -1065,3 +1268,4 @@ class ClientHunterAgent:
                 }
             ]
         }
+

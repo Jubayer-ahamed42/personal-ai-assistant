@@ -34,6 +34,8 @@ def keep_alive_worker():
 
 def main():
     if "--test-hunt" in sys.argv:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
         logger.info("Running standalone ClientHunter & Business X-Ray test workflow...")
         hunter = ClientHunterAgent()
         res = hunter.execute_hunt_workflow(mark_as_scanned=False)

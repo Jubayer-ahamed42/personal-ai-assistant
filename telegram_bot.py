@@ -64,10 +64,20 @@ async def safe_send_telegram_text(
     text: str,
     reply_markup: Optional[InlineKeyboardMarkup] = None
 ):
-    """Safely sends long Markdown messages in chunks with automatic plain-text fallback on entity parse errors."""
+    """Safely sends long Markdown messages in newline-aware chunks with automatic plain-text fallback."""
     if not text:
         return
-    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+    chunks: List[str] = []
+    remaining = text
+    while len(remaining) > 4000:
+        split_at = remaining.rfind("\n", 0, 4000)
+        if split_at <= 0:
+            split_at = 4000
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].lstrip("\n")
+    if remaining.strip():
+        chunks.append(remaining.strip())
+
     for idx, chunk in enumerate(chunks):
         markup = reply_markup if idx == len(chunks) - 1 else None
         try:
