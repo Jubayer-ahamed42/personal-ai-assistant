@@ -42,6 +42,9 @@ USER_MODES: Dict[int, str] = {}
 # Stores the most recent generated proposal per chat_id for instant button preview or scheduled delivery
 PENDING_PROPOSALS: Dict[int, Dict[str, Any]] = {}
 
+# Tracks active delayed Step-2 asyncio tasks per chat_id to prevent duplicate or overlapping deliveries
+ACTIVE_STEP2_TASKS: Dict[int, asyncio.Task] = {}
+
 def get_session_id(user_id: int) -> str:
     """Returns a unique, persistent SQLite session ID for the Telegram user."""
     return f"telegram_{user_id}"
@@ -507,6 +510,7 @@ async def send_client_hunter_step1(app: Application, chat_id: int, workflow_data
 
 async def send_client_hunter_step2(app: Application, chat_id: int, workflow_data: Dict[str, Any]):
     """Sends Step 2 Message (7:10 AM / after delay): Ready-Made High-Converting Smart Proposal Letter & 1-click WhatsApp link."""
+    workflow_data["step2_sent"] = True
     proposal_text = workflow_data.get("proposal_letter_message", "")
     wa_url = workflow_data.get("company_whatsapp_url", "https://wa.me/8801700000000")
     company_name = workflow_data.get("company", {}).get("name", "টার্গেট কোম্পানি")
@@ -526,12 +530,26 @@ async def send_client_hunter_step2(app: Application, chat_id: int, workflow_data
     await safe_send_telegram_text(app.bot, chat_id, full_msg, reply_markup=reply_markup)
 
 async def _delayed_step2_task(app: Application, chat_id: int, workflow_data: Dict[str, Any], delay_seconds: int):
-    """Sleeps for delay_seconds (600s for 7:10 AM schedule, or 10s for /hunt fast) and automatically sends Step 2 Proposal Letter."""
+    """Sleeps for delay_seconds (600s for 7:10 AM schedule, or 10s for /hunt fast) and automatically sends Step 2 Proposal Letter if not already sent."""
     try:
         await asyncio.sleep(delay_seconds)
+        if workflow_data.get("step2_sent"):
+            logger.info(f"Step 2 Proposal already viewed/sent for chat {chat_id}; skipping duplicate scheduled delivery.")
+            return
         await send_client_hunter_step2(app, chat_id, workflow_data)
+    except asyncio.CancelledError:
+        logger.debug(f"Previous delayed Step 2 task cancelled for chat {chat_id}.")
     except Exception as e:
         logger.error(f"Delayed Step 2 Proposal send error for chat {chat_id}: {e}")
+
+def _schedule_step2_for_chat(app: Application, chat_id: int, workflow_data: Dict[str, Any], delay_seconds: int):
+    """Cancels any existing pending Step-2 timer for chat_id and schedules a fresh one."""
+    prev_task = ACTIVE_STEP2_TASKS.get(chat_id)
+    if prev_task and not prev_task.done():
+        prev_task.cancel()
+    ACTIVE_STEP2_TASKS[chat_id] = asyncio.create_task(
+        _delayed_step2_task(app, chat_id, workflow_data, delay_seconds=delay_seconds)
+    )
 
 async def execute_and_send_client_hunt(
     app: Application,
@@ -544,7 +562,7 @@ async def execute_and_send_client_hunt(
     workflow_data = await asyncio.to_thread(agent.execute_hunt_workflow, query_str, True)
 
     await send_client_hunter_step1(app, chat_id, workflow_data, delay_seconds=delay_seconds)
-    asyncio.create_task(_delayed_step2_task(app, chat_id, workflow_data, delay_seconds=delay_seconds))
+    _schedule_step2_for_chat(app, chat_id, workflow_data, delay_seconds=delay_seconds)
     return workflow_data
 
 async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -642,10 +660,12 @@ async def daily_client_hunter_scheduler_loop(app: Application):
 
                     for cid in subscribers:
                         try:
+                            chat_wf = dict(workflow_data)
+                            chat_wf["step2_sent"] = False
                             # Step 1 at 7:00 AM: Full Business X-Ray Audit, Solutions & Pricing Report
-                            await send_client_hunter_step1(app, cid, workflow_data, delay_seconds=600)
+                            await send_client_hunter_step1(app, cid, chat_wf, delay_seconds=600)
                             # Step 2 scheduled for 7:10 AM (exactly 600 seconds / 10 minutes later)
-                            asyncio.create_task(_delayed_step2_task(app, cid, workflow_data, delay_seconds=600))
+                            _schedule_step2_for_chat(app, cid, chat_wf, delay_seconds=600)
                         except Exception as sub_err:
                             logger.error(f"Failed to send 7:00 AM ClientHunter report to chat {cid}: {sub_err}")
 

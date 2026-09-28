@@ -2,8 +2,10 @@ import os
 import re
 import ssl
 import gzip
+import zlib
 import time
 import json
+import threading
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -255,7 +257,13 @@ REAL_TARGET_BUSINESS_POOL: List[Dict[str, Any]] = [
 
 
 class ScannedCompanyStore:
-    """Manages persistent JSON history of scanned companies so no company is ever reported twice."""
+    """Manages persistent JSON history of scanned companies so no company is ever reported twice.
+    
+    Uses a re-entrant thread lock and atomic temp-file swap (os.replace) to prevent
+    race conditions or JSON corruption when multiple threads/schedulers access the store concurrently.
+    """
+
+    _STORE_LOCK = threading.RLock()
 
     def __init__(self, storage_path: Optional[Path] = None):
         self.storage_path = Path(storage_path) if storage_path else DEFAULT_SCANNED_DB_PATH
@@ -263,33 +271,36 @@ class ScannedCompanyStore:
         self._ensure_file()
 
     def _ensure_file(self):
-        if not self.storage_path.exists():
-            self._write_data({"scanned_keys": [], "history": []})
+        with self._STORE_LOCK:
+            if not self.storage_path.exists():
+                self._write_data({"scanned_keys": [], "history": []})
 
     def _read_data(self) -> Dict[str, Any]:
-        try:
-            if not self.storage_path.exists():
+        with self._STORE_LOCK:
+            try:
+                if not self.storage_path.exists():
+                    return {"scanned_keys": [], "history": []}
+                raw = self.storage_path.read_text(encoding="utf-8")
+                data = json.loads(raw) if raw.strip() else {}
+                if not isinstance(data, dict):
+                    return {"scanned_keys": [], "history": []}
+                data.setdefault("scanned_keys", [])
+                data.setdefault("history", [])
+                return data
+            except Exception as e:
+                logger.warning(f"Failed to read scanned companies store ({self.storage_path}): {e}")
                 return {"scanned_keys": [], "history": []}
-            raw = self.storage_path.read_text(encoding="utf-8")
-            data = json.loads(raw) if raw.strip() else {}
-            if not isinstance(data, dict):
-                return {"scanned_keys": [], "history": []}
-            data.setdefault("scanned_keys", [])
-            data.setdefault("history", [])
-            return data
-        except Exception as e:
-            logger.warning(f"Failed to read scanned companies store ({self.storage_path}): {e}")
-            return {"scanned_keys": [], "history": []}
 
     def _write_data(self, data: Dict[str, Any]):
-        try:
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            self.storage_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to write scanned companies store ({self.storage_path}): {e}")
+        with self._STORE_LOCK:
+            try:
+                self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
+                payload = json.dumps(data, ensure_ascii=False, indent=2)
+                tmp_path.write_text(payload, encoding="utf-8")
+                os.replace(str(tmp_path), str(self.storage_path))
+            except Exception as e:
+                logger.warning(f"Failed to write scanned companies store ({self.storage_path}): {e}")
 
     @staticmethod
     def normalize_name(name: str) -> str:
@@ -307,55 +318,60 @@ class ScannedCompanyStore:
             u = "https://" + u
         try:
             parsed = urllib.parse.urlparse(u)
-            host = parsed.netloc or parsed.path
+            host = parsed.netloc or parsed.path.split("/")[0]
+            host = host.split("@")[-1].split(":")[0]
             host = re.sub(r"^www\.", "", host).strip("/")
             return host
         except Exception:
             return u
 
     def is_scanned(self, company_name: str, website_url: str = "") -> bool:
-        data = self._read_data()
-        keys = set(data.get("scanned_keys", []))
-        name_key = f"name:{self.normalize_name(company_name)}" if company_name else ""
-        domain_key = f"domain:{self.normalize_domain(website_url)}" if website_url else ""
-        if name_key and name_key in keys:
-            return True
-        if domain_key and domain_key != "domain:" and domain_key in keys:
-            return True
-        return False
+        with self._STORE_LOCK:
+            data = self._read_data()
+            keys = set(data.get("scanned_keys", []))
+            name_key = f"name:{self.normalize_name(company_name)}" if company_name else ""
+            domain_key = f"domain:{self.normalize_domain(website_url)}" if website_url else ""
+            if name_key and name_key != "name:" and name_key in keys:
+                return True
+            if domain_key and domain_key != "domain:" and domain_key in keys:
+                return True
+            return False
 
     def mark_scanned(self, company_info: Dict[str, Any]):
-        data = self._read_data()
-        keys = set(data.get("scanned_keys", []))
-        name = company_info.get("name", "")
-        url = company_info.get("website", "")
-        name_key = f"name:{self.normalize_name(name)}" if name else ""
-        domain_key = f"domain:{self.normalize_domain(url)}" if url else ""
+        with self._STORE_LOCK:
+            data = self._read_data()
+            keys = set(data.get("scanned_keys", []))
+            name = company_info.get("name", "")
+            url = company_info.get("website", "")
+            name_key = f"name:{self.normalize_name(name)}" if name else ""
+            domain_key = f"domain:{self.normalize_domain(url)}" if url else ""
 
-        if name_key:
-            keys.add(name_key)
-        if domain_key and domain_key != "domain:":
-            keys.add(domain_key)
+            if name_key and name_key != "name:":
+                keys.add(name_key)
+            if domain_key and domain_key != "domain:":
+                keys.add(domain_key)
 
-        data["scanned_keys"] = sorted(list(keys))
-        bd_tz = timezone(timedelta(hours=6))
-        entry = {
-            "name": name,
-            "website": url,
-            "category": company_info.get("category", ""),
-            "location": company_info.get("location", ""),
-            "phone": company_info.get("phone", ""),
-            "health_score": company_info.get("health_score"),
-            "scanned_at": datetime.now(bd_tz).isoformat()
-        }
-        data.setdefault("history", []).append(entry)
-        self._write_data(data)
+            data["scanned_keys"] = sorted(list(keys))
+            bd_tz = timezone(timedelta(hours=6))
+            entry = {
+                "name": name,
+                "website": url,
+                "category": company_info.get("category", ""),
+                "location": company_info.get("location", ""),
+                "phone": company_info.get("phone", ""),
+                "health_score": company_info.get("health_score"),
+                "scanned_at": datetime.now(bd_tz).isoformat()
+            }
+            data.setdefault("history", []).append(entry)
+            self._write_data(data)
 
     def get_history(self) -> List[Dict[str, Any]]:
-        return self._read_data().get("history", [])
+        with self._STORE_LOCK:
+            return list(self._read_data().get("history", []))
 
     def clear(self):
-        self._write_data({"scanned_keys": [], "history": []})
+        with self._STORE_LOCK:
+            self._write_data({"scanned_keys": [], "history": []})
 
 
 def sanitize_whatsapp_number(phone_str: str) -> str:
@@ -399,6 +415,7 @@ class BusinessXRayScanner:
             "load_time_sec": 0.0,
             "page_size_kb": 0.0,
             "has_ssl": False,
+            "ssl_verified": False,
             "has_meta_pixel": False,
             "meta_pixel_signals": [],
             "has_google_analytics": False,
@@ -428,9 +445,9 @@ class BusinessXRayScanner:
             return result
 
         target_url = url.strip()
+        explicit_http = target_url.lower().startswith("http://")
         if not target_url.startswith(("http://", "https://")):
             target_url = "https://" + target_url
-        result["has_ssl"] = target_url.lower().startswith("https://")
 
         headers = {
             "User-Agent": (
@@ -438,33 +455,64 @@ class BusinessXRayScanner:
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,bn;q=0.8"
+            "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
+            "Accept-Encoding": "gzip, deflate"
         }
 
         start_ts = time.perf_counter()
-        html = ""
         raw_bytes = b""
         resp_headers: Dict[str, str] = {}
-        try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
 
-            req = urllib.request.Request(target_url, headers=headers)
+        def _fetch_with_context(fetch_url: str, verify_ssl: bool) -> Tuple[bytes, int, str, Dict[str, str]]:
+            ctx = ssl.create_default_context()
+            if not verify_ssl:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(fetch_url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-                elapsed = time.perf_counter() - start_ts
-                raw_bytes = resp.read(350_000)  # Cap read at 350 KB for fast scanning
-                result["is_live"] = True
-                result["http_status"] = getattr(resp, "status", 200) or 200
-                result["load_time_sec"] = round(elapsed, 2)
-                final_url = resp.geturl() if hasattr(resp, "geturl") and callable(resp.geturl) else target_url
-                if isinstance(final_url, str) and final_url.lower().startswith("https://"):
-                    result["has_ssl"] = True
-                resp_headers = {k.lower(): v for k, v in resp.headers.items()} if resp.headers else {}
+                data = resp.read(350_000)
+                status = getattr(resp, "status", 200) or 200
+                final_u = resp.geturl() if hasattr(resp, "geturl") and callable(resp.geturl) else fetch_url
+                hdrs = {k.lower(): v for k, v in resp.headers.items()} if resp.headers else {}
+                return data, status, final_u if isinstance(final_u, str) else fetch_url, hdrs
+
+        try:
+            try:
+                raw_bytes, status_code, final_url, resp_headers = _fetch_with_context(target_url, verify_ssl=True)
+                ssl_ok = final_url.lower().startswith("https://") and not explicit_http
+                result["has_ssl"] = ssl_ok
+                result["ssl_verified"] = ssl_ok
+            except ssl.SSLError as ssl_err:
+                logger.debug(f"SSL certificate verification failed for {target_url}, retrying unverified: {ssl_err}")
+                raw_bytes, status_code, final_url, resp_headers = _fetch_with_context(target_url, verify_ssl=False)
+                result["has_ssl"] = False
+                result["ssl_verified"] = False
+                result["scan_mode"] = "live_http_ssl_unverified"
+            except urllib.error.URLError as url_err:
+                if isinstance(getattr(url_err, "reason", None), ssl.SSLError):
+                    raw_bytes, status_code, final_url, resp_headers = _fetch_with_context(target_url, verify_ssl=False)
+                    result["has_ssl"] = False
+                    result["ssl_verified"] = False
+                    result["scan_mode"] = "live_http_ssl_unverified"
+                elif target_url.lower().startswith("https://"):
+                    # Fallback to plain HTTP if target server only listens on port 80
+                    http_fallback_url = "http://" + target_url[8:]
+                    raw_bytes, status_code, final_url, resp_headers = _fetch_with_context(http_fallback_url, verify_ssl=False)
+                    result["has_ssl"] = False
+                    result["ssl_verified"] = False
+                    result["scan_mode"] = "live_http_no_ssl"
+                else:
+                    raise
+
+            elapsed = time.perf_counter() - start_ts
+            result["is_live"] = True
+            result["http_status"] = status_code
+            result["load_time_sec"] = round(elapsed, 2)
         except urllib.error.HTTPError as http_err:
             elapsed = time.perf_counter() - start_ts
             result["http_status"] = int(getattr(http_err, "code", 0) or 0)
             result["load_time_sec"] = round(elapsed, 2)
+            result["has_ssl"] = target_url.lower().startswith("https://") and not explicit_http
             result["scan_mode"] = f"http_error_{result['http_status']}"
             try:
                 raw_bytes = http_err.read(150_000) if hasattr(http_err, "read") else b""
@@ -476,26 +524,44 @@ class BusinessXRayScanner:
         except Exception as e:
             elapsed = time.perf_counter() - start_ts
             result["load_time_sec"] = round(elapsed, 2)
+            result["has_ssl"] = False
             result["scan_mode"] = f"unreachable_or_blocked ({type(e).__name__})"
             logger.debug(f"Live HTTP scan note for {target_url}: {e}")
             return result
 
-        # Decompress gzip payload if compressed
-        if raw_bytes and (
-            resp_headers.get("content-encoding", "").lower() == "gzip"
-            or raw_bytes[:2] == b"\x1f\x8b"
-        ):
-            try:
-                raw_bytes = gzip.decompress(raw_bytes)
-            except Exception:
-                pass
+        # Decompress gzip or deflate payload if compressed
+        content_enc = resp_headers.get("content-encoding", "").lower()
+        if raw_bytes:
+            if content_enc == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
+                try:
+                    raw_bytes = gzip.decompress(raw_bytes)
+                except Exception:
+                    pass
+            elif content_enc == "deflate":
+                try:
+                    raw_bytes = zlib.decompress(raw_bytes)
+                except Exception:
+                    try:
+                        raw_bytes = zlib.decompress(raw_bytes, -zlib.MAX_WBITS)
+                    except Exception:
+                        pass
 
         result["page_size_kb"] = round(len(raw_bytes) / 1024.0, 1)
         for sec_h in ["strict-transport-security", "x-frame-options", "x-content-type-options", "content-security-policy"]:
             if sec_h in resp_headers:
                 result["security_headers_present"].append(sec_h)
 
-        html = raw_bytes.decode("utf-8", errors="ignore")
+        # Decode using detected charset or UTF-8 fallback
+        charset = "utf-8"
+        ct_header = resp_headers.get("content-type", "")
+        cs_match = re.search(r"charset=([a-zA-Z0-9_\-]+)", ct_header, re.IGNORECASE)
+        if cs_match:
+            charset = cs_match.group(1).strip()
+        try:
+            html = raw_bytes.decode(charset, errors="ignore")
+        except LookupError:
+            html = raw_bytes.decode("utf-8", errors="ignore")
+
         if not html.strip():
             return result
 
@@ -526,16 +592,16 @@ class BusinessXRayScanner:
                 result["has_google_analytics"] = True
                 result["ga_signals"].append(label)
 
-        # 3. 24/7 AI Chatbot & WhatsApp Automation Check
+        # 3. 24/7 AI Chatbot & WhatsApp Automation Check (strict widget/script patterns to avoid prose false-positives)
         chatbot_patterns = [
             ("Tawk.to", r"tawk\.to"),
             ("Crisp Chat", r"crisp\.chat"),
-            ("Intercom", r"intercom"),
-            ("Tidio AI", r"tidio"),
-            ("Zendesk Chat", r"zendesk"),
-            ("LiveChat", r"livechatinc"),
-            ("Messenger Customer Chat", r"fb-customerchat|customerchat"),
-            ("AI Chatbot Widget", r"chatbot|chat-widget|botpress|dialogflow|manychat")
+            ("Intercom", r"intercom\.io|intercomsettings|widget\.intercom"),
+            ("Tidio AI", r"tidio\.co|tidiochat"),
+            ("Zendesk Chat", r"zdassets\.com|zopim|zendesk"),
+            ("LiveChat", r"livechatinc\.com|__lc\b"),
+            ("Messenger Customer Chat", r"fb-customerchat|customer_chat"),
+            ("AI Chatbot Widget", r"chat-widget|chatbot-widget|botpress|dialogflow|manychat|wati\.io|respond\.io|joinchat")
         ]
         for label, pat in chatbot_patterns:
             if re.search(pat, html_lower):
@@ -549,10 +615,10 @@ class BusinessXRayScanner:
         if re.search(r'<meta[^>]+name=["\']viewport["\']', html_lower):
             result["has_viewport_meta"] = True
 
-        # 5. Online Booking / Order / SaaS System Check
+        # 5. Online Booking / Order / SaaS System Check (interactive endpoints/widgets rather than plain text mentions)
         booking_patterns = [
-            ("Appointment/Booking", r"appointment|book-now|book_now|online-booking|reservation"),
-            ("E-Commerce Cart/Checkout", r"add-to-cart|checkout|woocommerce|shopify|order-now"),
+            ("Appointment/Booking", r"book-now|book_now|online-booking|appointment-form|make-appointment|calendly\.com|booking-form|href=[\"'][^\"']*(?:appointment|booking|reservation)"),
+            ("E-Commerce Cart/Checkout", r"add-to-cart|add_to_cart|checkout|woocommerce|shopify|order-now"),
             ("Customer/Patient Portal", r"patient-portal|client-portal|track-order|login-portal")
         ]
         for label, pat in booking_patterns:
@@ -593,12 +659,17 @@ class BusinessXRayScanner:
         emails = set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", html))
         valid_emails = [
             e for e in emails
-            if not e.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".js", ".css"))
+            if not e.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".js", ".css", ".woff", ".ttf"))
         ]
         result["discovered_emails"] = sorted(valid_emails)[:3]
 
-        phones = set(re.findall(r"(?:\+?880|01)[0-9\-\s]{8,13}", html))
-        result["discovered_phones"] = [re.sub(r"\s+", " ", p.strip()) for p in sorted(phones)[:3]]
+        raw_phones = set(re.findall(r"(?:\+?880|01|096)[0-9\- ]{8,14}", html))
+        valid_phones = []
+        for p in sorted(raw_phones):
+            digits_only = re.sub(r"\D+", "", p)
+            if 10 <= len(digits_only) <= 13:
+                valid_phones.append(re.sub(r"\s+", " ", p.strip()))
+        result["discovered_phones"] = valid_phones[:3]
 
         fb_matches = re.findall(r"https?://(?:www\.)?facebook\.com/[a-zA-Z0-9._\-]+", html)
         for fb_url in fb_matches:
@@ -613,7 +684,15 @@ class DigitalHealthAndRevenueCalculator:
     """Calculates the 100-point Digital Health Score, BDT Lost-Revenue Estimate, and BDT Pricing Strategy."""
 
     @staticmethod
-    def evaluate(company: Dict[str, Any], scan: Dict[str, Any]) -> Dict[str, Any]:
+    def _safe_positive_int(val: Any, default: int) -> int:
+        try:
+            parsed = int(float(val))
+            return parsed if parsed > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def evaluate(cls, company: Dict[str, Any], scan: Dict[str, Any]) -> Dict[str, Any]:
         score = 18  # Base presence score (business exists with contact/social footprint)
 
         if scan.get("is_live"):
@@ -628,7 +707,7 @@ class DigitalHealthAndRevenueCalculator:
             score += 14
         if scan.get("has_whatsapp_widget"):
             score += 6
-        if scan.get("has_viewport_meta") and (0 < scan.get("load_time_sec", 5.0) < 2.5):
+        if scan.get("has_viewport_meta") and (0 <= float(scan.get("load_time_sec", 5.0) or 0.0) < 2.5):
             score += 6
         if scan.get("has_booking_or_order"):
             score += 8
@@ -645,9 +724,9 @@ class DigitalHealthAndRevenueCalculator:
         else:
             badge = f"{score}/100 🟡 (মাঝারি অবস্থা - Optimization Opportunity)"
 
-        # Lost Revenue Calculation in BDT
-        visitors = int(company.get("avg_monthly_visitors", 20000))
-        avg_ticket = int(company.get("avg_ticket_bdt", 2500))
+        # Lost Revenue Calculation in BDT (safe against None, 0, or non-numeric strings)
+        visitors = cls._safe_positive_int(company.get("avg_monthly_visitors"), 20000)
+        avg_ticket = cls._safe_positive_int(company.get("avg_ticket_bdt"), 2500)
 
         # Estimate lost conversion rate due to missing Meta Pixel, AI Chatbot, and automated booking
         missing_factors = 0
@@ -671,11 +750,11 @@ class DigitalHealthAndRevenueCalculator:
 
         # Keep realistic BDT bounds for Bangladeshi SMEs & Enterprises (85,000 BDT to 7,50,000 BDT/month)
         min_lost_bdt = max(85000, min(int(raw_lost_bdt * 0.8), 450000))
-        max_lost_bdt = max(140000, min(int(raw_lost_bdt * 1.25), 750000))
+        max_lost_bdt = max(min_lost_bdt + 45000, min(int(raw_lost_bdt * 1.25), 750000))
 
         # Calibrate pricing in BDT based on category
-        cat_lower = company.get("category", "").lower()
-        if any(k in cat_lower for k in ["real estate", "রিয়েল এস্টেট", "hospital", "হাসপাতাল", "resort", "রিসোর্ট", "hotel", "হোটেল"]):
+        cat_lower = str(company.get("category", "")).lower()
+        if any(k in cat_lower for k in ["real estate", "রিয়েল এস্টেট", "রিয়েল এস্টেট", "hospital", "হাসপাতাল", "diagnostic", "ডায়াগনস্টিক", "resort", "রিসোর্ট", "hotel", "হোটেল"]):
             asking_range = "৩৫,০০০ টাকা থেকে ৬৫,০০০ টাকা"
             walk_away = "২৫,০০০ টাকা"
             retainer = "৫,০০০ টাকা - ৮,০০০ টাকা / মাস"
@@ -845,10 +924,14 @@ class ClientHunterAgent:
         clean_query = (query or "").strip()
         clean_query = re.sub(r"\bfast\b", "", clean_query, flags=re.IGNORECASE).strip()
 
-        # 0. Check if user passed a direct website URL or domain (e.g., /hunt https://example.com)
-        url_match = re.search(r"(https?://[^\s]+|\b[a-zA-Z0-9\-]+\.(?:com|com\.bd|org|net|io|clothing|health|bd)\b[^\s]*)", clean_query)
+        # 0. Check if user passed a direct website URL or domain (supports subdomains like www. or portal. and BD/global TLDs)
+        url_match = re.search(
+            r"(https?://[^\s]+|\b(?:[a-zA-Z0-9\-]+\.)+(?:com\.bd|edu\.bd|org\.bd|net\.bd|ac\.bd|gov\.bd|com|org|net|io|ai|co|clothing|health|bd|shop|store|xyz|info|biz)\b[^\s]*)",
+            clean_query,
+            re.IGNORECASE
+        )
         if url_match:
-            raw_url = url_match.group(1).strip()
+            raw_url = url_match.group(1).strip().rstrip(".,;)")
             norm_url = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
             domain = ScannedCompanyStore.normalize_domain(norm_url)
             for item in REAL_TARGET_BUSINESS_POOL:
@@ -870,7 +953,8 @@ class ClientHunterAgent:
                 "review_pain_points": "কাস্টমাররা দ্রুত রিপ্লাই না পাওয়া, ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়া এবং তথ্যের ঘাটতি নিয়ে অভিযোগ করছেন।",
                 "ad_spend_signal": "সোশ্যাল মিডিয়ায় প্রমোশন চললেও ওয়েবসাইটে কনভার্সন ট্র্যাকিং ও অটোমেশন অনুপস্থিত।",
                 "avg_monthly_visitors": 18000,
-                "avg_ticket_bdt": 2500
+                "avg_ticket_bdt": 2500,
+                "_is_dynamic": True
             }
 
         candidates: List[Dict[str, Any]] = []
@@ -916,7 +1000,7 @@ class ClientHunterAgent:
                 if any(skip in url.lower() for skip in ["wikipedia.org", "youtube.com", "daraz.com", "bikroy.com", "facebook.com"]):
                     continue
                 if not self.store.is_scanned(title, url):
-                    phone_match = re.search(r"(?:\+?880|01)[0-9\-\s]{8,13}", snippet)
+                    phone_match = re.search(r"(?:\+?880|01)[0-9\- ]{8,13}", snippet)
                     phone_str = phone_match.group(0).strip() if phone_match else "+880 1711-000000"
                     domain_clean = ScannedCompanyStore.normalize_domain(url) or "company.com"
                     candidates.append({
@@ -934,7 +1018,8 @@ class ClientHunterAgent:
                         "review_pain_points": "কাস্টমাররা দ্রুত রিপ্লাই না পাওয়া, ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়া এবং তথ্যের ঘাটতি নিয়ে অভিযোগ করছেন।",
                         "ad_spend_signal": "সোশ্যাল মিডিয়ায় প্রমোশন চললেও ওয়েবসাইটে কনভার্সন ট্র্যাকিং ও অটোমেশন অনুপস্থিত।",
                         "avg_monthly_visitors": 18000,
-                        "avg_ticket_bdt": 2500
+                        "avg_ticket_bdt": 2500,
+                        "_is_dynamic": True
                     })
                     break
 
@@ -959,6 +1044,85 @@ class ClientHunterAgent:
             candidates.append(base)
 
         return candidates[0]
+
+    @staticmethod
+    def _enrich_dynamic_business_intel(company: Dict[str, Any], scan: Dict[str, Any]):
+        """Enriches dynamically discovered businesses (from direct URL or web search) using live HTML title & meta telemetry."""
+        if not company.get("_is_dynamic"):
+            return
+
+        title_txt = (scan.get("title_text") or "").strip()
+        desc_txt = (scan.get("meta_description_text") or "").strip()
+        combined_context = f"{company.get('name', '')} {company.get('category', '')} {title_txt} {desc_txt}".lower()
+
+        if title_txt and "(" in company.get("name", ""):
+            clean_title = title_txt.split("|")[0].split("–")[0].split("-")[0].strip()
+            if 3 <= len(clean_title) <= 75:
+                domain = ScannedCompanyStore.normalize_domain(company.get("website", ""))
+                company["name"] = f"{clean_title} ({domain})" if domain else clean_title
+
+        # Sector-specific intelligence enrichment based on live website keywords
+        sector_profiles = {
+            "healthcare": {
+                "category": "ডায়াগনস্টিক সেন্টার ও হেলথকেয়ার (Healthcare & Diagnostic)",
+                "competitor_name": "Praava Health & Evercare Online Portal",
+                "competitor_advantage": "শীর্ষ প্রতিদ্বন্দ্বীরা অনলাইন ডক্টর অ্যাপয়েন্টমেন্ট, ২৪/৭ AI হোয়াটসঅ্যাপ বুকিং এবং অটোমেটেড টেস্ট রিপোর্ট ডেলিভারি ব্যবহার করছে।",
+                "review_pain_points": "রোগীদের অভিযোগ: সিরিয়াল ও টেস্টের তথ্য জানতে কল সেন্টারে দীর্ঘ অপেক্ষা করতে হয় এবং রাতে বা ছুটির দিনে তাৎক্ষণিক ইনবক্স রিপ্লাই মেলে না।",
+                "avg_ticket_bdt": 2400
+            },
+            "restaurant": {
+                "category": "রেস্টুরেন্ট ও হসপিটালিটি ব্র্যান্ড (Restaurant & Food Brand)",
+                "competitor_name": "Kacchi Bhai & Chillox Direct Ordering Funnel",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা নিজস্ব ডিরেক্ট অর্ডারিং ওয়েব অ্যাপ, মেটা পিক্সেল রিটার্গেটিং এবং হোয়াটসঅ্যাপ ক্যাটারিং বুকিং বট দিয়ে সরাসরি সেল বাড়াচ্ছে।",
+                "review_pain_points": "কাস্টমারদের অভিযোগ: টেবিল রিজার্ভেশন বা বাল্ক অর্ডারের জন্য ইনবক্সে দ্রুত রিপ্লাই মেলে না এবং ওয়েবসাইটে ১-ক্লিক অর্ডার ফানেল নেই।",
+                "avg_ticket_bdt": 1500
+            },
+            "hotel_resort": {
+                "category": "হোটেল ও লাক্সারি রিসোর্ট (Hotel & Resort Hospitality)",
+                "competitor_name": "Sayeman Beach Resort & Sea Pearl Online Booking",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা রিয়েল-টাইম রুম বুকিং ইঞ্জিন, ডায়নামিক মেটা পিক্সেল রিটার্গেটিং এবং ২৪/৭ AI হোয়াটসঅ্যাপ কনসিয়ার্জ ব্যবহার করছে।",
+                "review_pain_points": "ভ্রমণকারীদের অভিযোগ: রুমের ভাড়া ও অফার জানতে ফোনে/ইনবক্সে অপেক্ষা করতে হয় এবং ওয়েবসাইটে ইনস্ট্যান্ট বুকিং অটোমেশন নেই।",
+                "avg_ticket_bdt": 8500
+            },
+            "real_estate": {
+                "category": "রিয়েল এস্টেট ও প্রপার্টি ডেভেলপার (Real Estate & Property)",
+                "competitor_name": "bti & Shanta Holdings Digital Lead Funnel",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা ২৪/৭ AI প্রপার্টি অ্যাডভাইজর বট, অটোমেটেড ব্রোশিওর ডেলিভারি এবং প্রবাসী ক্লায়েন্টদের জন্য ভার্চুয়াল ট্যুর বুকিং ব্যবহার করছে।",
+                "review_pain_points": "ক্রেতাদের অভিযোগ: প্রজেক্টের দাম ও ফ্লোর প্ল্যান জানতে ফর্ম পূরণের পর দ্রুত রেসপন্স ও হোয়াটসঅ্যাপে তাৎক্ষণিক ব্রোশিওর পাওয়া যায় না।",
+                "avg_ticket_bdt": 45000
+            },
+            "ecommerce": {
+                "category": "ই-কমার্স ও রিটেইল ব্র্যান্ড (E-Commerce & Retail)",
+                "competitor_name": "Aarong Online & Chaldal Smart Funnel",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা Abandoned Cart হোয়াটসঅ্যাপ রিকভারি বট, Server-Side Meta CAPI এবং আল্ট্রা-ফাস্ট চেকআউট ফানেল ব্যবহার করছে।",
+                "review_pain_points": "অনলাইন ক্রেতাদের অভিযোগ: অর্ডার স্ট্যাটাস বা স্টক জানতে ইনবক্সে দেরিতে উত্তর আসে এবং কার্ট ড্রপ রিকভারি অটোমেশন নেই।",
+                "avg_ticket_bdt": 2200
+            },
+            "travel": {
+                "category": "ট্রাভেল এজেন্সি ও ভিসা কনসালটেন্সি (Travel & Visa Agency)",
+                "competitor_name": "ShareTrip & GoZayaan Automated Portal",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা ইনস্ট্যান্ট ট্যুর ও ভিসা চেকলিস্ট AI বট এবং স্বয়ংক্রিয় অনলাইন বুকিং পোর্টাল ব্যবহার করছে।",
+                "review_pain_points": "ট্রাভেলারদের অভিযোগ: ভিসা প্রসেসিং ও প্যাকেজের কাস্টমাইজড খরচ জানতে তাৎক্ষণিক হোয়াটসঅ্যাপ রিপ্লাই পাওয়া যায় না।",
+                "avg_ticket_bdt": 30000
+            },
+            "coaching_edtech": {
+                "category": "কোচিং সেন্টার ও স্টাডি অ্যাব্রোড কনসালটেন্সি (Coaching & EdTech)",
+                "competitor_name": "10 Minute School & IDP Study Abroad Funnel",
+                "competitor_advantage": "প্রতিদ্বন্দ্বীরা ২৪/৭ AI স্টুডেন্ট কাউন্সেলর বট এবং অটোমেটেড কাউন্সেলিং স্লট বুকিং ফানেল ব্যবহার করছে।",
+                "review_pain_points": "শিক্ষার্থীদের অভিযোগ: কোর্স ফি ও ব্যাচ শিডিউল জানতে ইনবক্সে বা ফোনে তাৎক্ষণিক কাউন্সেলিং সাপোর্ট পাওয়া যায় না।",
+                "avg_ticket_bdt": 10000
+            }
+        }
+
+        for grp_name, syns in CATEGORY_SYNONYM_GROUPS:
+            if any(s in combined_context for s in syns) and grp_name in sector_profiles:
+                prof = sector_profiles[grp_name]
+                company["category"] = prof["category"]
+                company["competitor_name"] = prof["competitor_name"]
+                company["competitor_advantage"] = prof["competitor_advantage"]
+                company["review_pain_points"] = prof["review_pain_points"]
+                company["avg_ticket_bdt"] = prof["avg_ticket_bdt"]
+                break
 
     def build_10_point_xray_dict(self, company: Dict[str, Any], scan: Dict[str, Any]) -> Dict[str, str]:
         """Builds the 10-Point Business X-Ray findings in fluent Bengali based on live scan telemetry."""
@@ -1201,7 +1365,9 @@ class ClientHunterAgent:
         company = self.discover_target_business(query=query)
         scan = self.scanner.scan_website(company.get("website", ""))
 
-        # Enrich company contact fields if discovered on live website
+        # Enrich dynamically discovered businesses using live HTML title, description, and contact info
+        self._enrich_dynamic_business_intel(company, scan)
+
         if scan.get("discovered_phones") and company.get("phone") == "+880 1711-000000":
             company["phone"] = scan["discovered_phones"][0]
             company["whatsapp_phone"] = sanitize_whatsapp_number(scan["discovered_phones"][0])
@@ -1242,6 +1408,9 @@ class ClientHunterAgent:
             workflow_data = self._last_workflow_cache[clean_task]
         else:
             workflow_data = self.execute_hunt_workflow(query=clean_task, mark_as_scanned=True)
+            if len(self._last_workflow_cache) >= 32:
+                oldest_key = next(iter(self._last_workflow_cache))
+                self._last_workflow_cache.pop(oldest_key, None)
             self._last_workflow_cache[clean_task] = workflow_data
 
         combined_output = (

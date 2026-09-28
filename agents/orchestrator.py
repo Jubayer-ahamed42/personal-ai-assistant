@@ -324,6 +324,7 @@ Respond ONLY with a JSON object:
 
             sub_agent_results.append({
                 "task": task,
+                "agent_type": agent_type,
                 "output": sub_output_data.get("output", ""),
                 "eval": eval_result,
                 "attempts": attempt
@@ -332,7 +333,15 @@ Respond ONLY with a JSON object:
         # Final Synthesis
         notify("synthesis", "চূড়ান্ত নিখুঁত ও পরিমার্জিত রিপোর্ট প্রস্তুত করা হচ্ছে...")
 
-        synthesis_prompt = f"""You are SMART AI ASSISTANT, the Master AI Assistant.
+        # If ClientHunter is the sole specialist executed, preserve its exact 10-point X-Ray & Official Signature formatting
+        if (
+            len(sub_agent_results) == 1
+            and sub_agent_results[0].get("agent_type") == "client_hunter"
+            and sub_agent_results[0].get("output")
+        ):
+            final_report = sub_agent_results[0]["output"]
+        else:
+            synthesis_prompt = f"""You are SMART AI ASSISTANT, the Master AI Assistant.
 Your specialized sub-agents have completed and verified all sub-tasks for the user's order.
 Combine and polish their findings into a single, comprehensive, beautifully structured final report.
 Always respond in the user's natural language (Bengali if the user prompted in Bengali, or English if prompted in English).
@@ -358,20 +367,20 @@ Formatting Requirements:
 - Source citations or verification notes.
 - Direct, pristine, and ready-to-use output.
 """
-        try:
-            final_report = call_llm(
-                messages=[{"role": "user", "content": synthesis_prompt}],
-                model=self.model,
-                temperature=0.2
-            )
-        except Exception as synth_err:
-            logger.error(f"Synthesis call error: {synth_err}")
-            findings_text = "\n\n".join([r.get("output", "") for r in sub_agent_results if r.get("output")])
-            final_report = (
-                f"আসসালামু আলাইকুম স্যার!\n\n"
-                f"আপনার নির্দেশিত কাজটি স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সম্পন্ন করেছে। বিস্তারিত প্রতিবেদন:\n\n"
-                f"{findings_text}"
-            )
+            try:
+                final_report = call_llm(
+                    messages=[{"role": "user", "content": synthesis_prompt}],
+                    model=self.model,
+                    temperature=0.2
+                )
+            except Exception as synth_err:
+                logger.error(f"Synthesis call error: {synth_err}")
+                findings_text = "\n\n".join([r.get("output", "") for r in sub_agent_results if r.get("output")])
+                final_report = (
+                    f"আসসালামু আলাইকুম স্যার!\n\n"
+                    f"আপনার নির্দেশিত কাজটি স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সম্পন্ন করেছে। বিস্তারিত প্রতিবেদন:\n\n"
+                    f"{findings_text}"
+                )
 
         # Generate voice audio for the final report summary
         notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")

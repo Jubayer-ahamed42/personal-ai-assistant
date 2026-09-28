@@ -426,7 +426,7 @@ if not chat_messages:
 
     """, unsafe_allow_html=True)
 
-    # 5 Quick Action Rows (Matching Screenshot & Hackathon Specialist)
+    # 6 Quick Action Rows (All 5 Specialist Sub-Agents + Chat)
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("🏆 Hackathon scout & mentor (হ্যাকাথন সন্ধান ও উইনিং রোডম্যাপ)", use_container_width=True):
@@ -436,6 +436,8 @@ if not chat_messages:
         if st.button("💻 Write or edit code (পাইথনে কোডিং ও স্যান্ডবক্স টেস্ট)", use_container_width=True):
             user_command = "পাইথনে ফিবোনাচ্চি অ্যালগরিদম লিখে স্যান্ডবক্সে টেস্ট করে নির্ভুল ফলাফল দেখাও"
     with col_b:
+        if st.button("🎯 ClientHunter & Business X-Ray (বিজনেস অডিট ও প্রপোজাল)", use_container_width=True):
+            user_command = "একটি রিয়েল টার্গেট কোম্পানির ১০-পয়েন্ট বিজনেস এক্স-রে অডিট, প্রাইসিং ও রেডিমেড প্রপোজাল লেটার তৈরি করো"
         if st.button("📊 Analyze data (ডাটা এনালাইসিস ও পরিসংখ্যান টেবিল)", use_container_width=True):
             user_command = "১ থেকে ৫০ পর্যন্ত জোড় সংখ্যার পরিসংখ্যানগত বিশ্লেষণ ও একটি তথ্য টেবিল তৈরি করো"
         if st.button("💬 Ask anything (যেকোনো মুক্ত আলোচনা বা সাধারণ প্রশ্ন)", use_container_width=True):

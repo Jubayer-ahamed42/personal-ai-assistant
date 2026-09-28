@@ -289,7 +289,95 @@ async def test_telegram_step1_and_step2_delivery(tmp_path: Path):
     mock_app.bot.send_message.reset_mock()
     await send_client_hunter_step2(mock_app, chat_id=12345, workflow_data=wf)
     assert mock_app.bot.send_message.await_count >= 1
+    assert wf["step2_sent"] is True
     sent_kwargs = mock_app.bot.send_message.await_args.kwargs
     assert "Jubayer Ahamed" in sent_kwargs["text"]
     assert "https://wa.me/" in sent_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_delayed_step2_skips_if_already_sent_via_button(tmp_path: Path):
+    """Verify _delayed_step2_task does not send a duplicate 2nd message if user already clicked 'send_proposal_now'."""
+    from telegram_bot import _delayed_step2_task
+
+    db_file = tmp_path / "scanned_companies.json"
+    agent = ClientHunterAgent(storage_path=db_file)
+    with patch.object(agent.scanner, "scan_website", return_value={"is_live": True, "http_status": 200, "has_ssl": True}):
+        wf = agent.execute_hunt_workflow(query="restaurant", mark_as_scanned=True)
+
+    mock_app = MagicMock()
+    mock_app.bot.send_message = AsyncMock()
+
+    # Simulate user clicking "📨 এখনই ২য় মেসেজ দেখুন" immediately
+    await send_client_hunter_step2(mock_app, chat_id=777, workflow_data=wf)
+    assert wf["step2_sent"] is True
+    initial_calls = mock_app.bot.send_message.await_count
+
+    # Now when the background timer finishes, it must NOT send a duplicate message
+    await _delayed_step2_task(mock_app, chat_id=777, workflow_data=wf, delay_seconds=0)
+    assert mock_app.bot.send_message.await_count == initial_calls
+
+
+def test_dynamic_url_discovery_and_sector_enrichment(tmp_path: Path):
+    """Verify subdomain URLs are parsed and dynamically enriched with sector intelligence from live HTML."""
+    db_file = tmp_path / "scanned_companies.json"
+    agent = ClientHunterAgent(storage_path=db_file)
+
+    mock_scan = {
+        "url": "https://www.unitedhospital.com.bd",
+        "is_live": True,
+        "http_status": 200,
+        "load_time_sec": 1.8,
+        "has_ssl": True,
+        "has_title": True,
+        "title_text": "United Hospital Limited | Best Tertiary Care Hospital in Dhaka",
+        "has_meta_description": True,
+        "meta_description_text": "Leading private hospital and diagnostic center in Gulshan Dhaka.",
+        "discovered_phones": ["+880 1914-001234"],
+        "discovered_emails": ["info@uhlbd.com"],
+        "discovered_facebook": "https://www.facebook.com/uhlbd"
+    }
+
+    with patch.object(agent.scanner, "scan_website", return_value=mock_scan):
+        wf = agent.execute_hunt_workflow(query="www.unitedhospital.com.bd", mark_as_scanned=True)
+
+    assert "United Hospital Limited" in wf["company"]["name"]
+    assert "হেলথকেয়ার" in wf["company"]["category"]
+    assert wf["company"]["phone"] == "+880 1914-001234"
+    assert wf["company"]["email"] == "info@uhlbd.com"
+    assert wf["company"]["facebook"] == "https://www.facebook.com/uhlbd"
+
+
+def test_calculator_safe_against_invalid_numeric_inputs():
+    """Verify DigitalHealthAndRevenueCalculator handles None, 0, or non-numeric visitor/ticket values safely."""
+    company = {
+        "name": "Test Co",
+        "category": "Real Estate",
+        "avg_monthly_visitors": None,
+        "avg_ticket_bdt": "invalid"
+    }
+    scan = {"is_live": False, "has_ssl": False}
+    metrics = DigitalHealthAndRevenueCalculator.evaluate(company, scan)
+    assert 22 <= metrics["health_score"] <= 68
+    assert metrics["max_lost_bdt"] > metrics["min_lost_bdt"]
+
+
+def test_evaluator_deterministic_approval_for_client_hunter(tmp_path: Path):
+    """Verify EvaluatorAgent deterministically validates and approves complete ClientHunter outputs without LLM overhead."""
+    from agents.evaluator_agent import EvaluatorAgent
+
+    db_file = tmp_path / "scanned_companies.json"
+    hunter = ClientHunterAgent(storage_path=db_file)
+    with patch.object(hunter.scanner, "scan_website", return_value={"is_live": True, "http_status": 200, "has_ssl": True}):
+        res = hunter.run("diagnostic center dhaka")
+
+    evaluator = EvaluatorAgent()
+    eval_res = evaluator.evaluate_output(
+        user_intent="diagnostic center dhaka",
+        subagent_name=hunter.name,
+        draft_output=res["output"]
+    )
+    assert eval_res["verdict"] == "APPROVED"
+    assert eval_res["average_score"] >= 4.8
+
 
