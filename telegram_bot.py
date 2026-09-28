@@ -52,17 +52,16 @@ def get_session_id(user_id: int) -> str:
 _DUMMY_TEST_CHAT_IDS = {12345, 777, 888777666, 999888777}
 
 def register_daily_subscriber(chat_id: int):
-    """Saves real chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
-    if not chat_id or int(chat_id) in _DUMMY_TEST_CHAT_IDS:
+    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
+    if not chat_id:
         return
     mem = MemoryManager()
     try:
         raw = mem.get_preference("daily_hackathon_subscribers", "[]")
         subscribers = json.loads(raw) if raw else []
-        subscribers = [int(cid) for cid in subscribers if int(cid) not in _DUMMY_TEST_CHAT_IDS]
         if int(chat_id) not in subscribers:
             subscribers.append(int(chat_id))
-        mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
+            mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
     except Exception as e:
         logger.warning(f"Failed to register daily subscriber {chat_id}: {e}")
 
