@@ -252,6 +252,23 @@ REAL_TARGET_BUSINESS_POOL: List[Dict[str, Any]] = [
         "ad_spend_signal": "IELTS, GED, BBA/IBA ও বিদেশে উচ্চশিক্ষার বিজ্ঞাপন নিয়মিত চলছে, কিন্তু ওয়েবসাইটে ২৪/৭ AI Student Counselor ও অটো-অ্যাপয়েন্টমেন্ট ফানেল নেই।",
         "avg_monthly_visitors": 30000,
         "avg_ticket_bdt": 12000
+    },
+    {
+        "name": "As-Sunnah Skill Development Institute (আস-সুন্নাহ স্কিল ডেভেলপমেন্ট ইনস্টিটিউট)",
+        "category": "কারিগরি ও আইটি স্কিল ডেভেলপমেন্ট ইনস্টিটিউট (Skill Development & EdTech Institute)",
+        "location": "Plot 56, Road 3, Block A, Aftabnagar, Badda, Dhaka-1212, Bangladesh",
+        "website": "https://assunnahskill.edu.bd",
+        "facebook": "https://www.facebook.com/assunnahskill",
+        "phone": "+880 9610-001089",
+        "whatsapp_phone": "8809610001089",
+        "email": "info@assunnahskill.edu.bd",
+        "decision_maker": "Shaykh Ahmadullah (Chairman, As-Sunnah Foundation) / Head of Skill Development & Training Operations",
+        "competitor_name": "10 Minute School, Creative IT Institute & Ostad",
+        "competitor_advantage": "শীর্ষ প্রতিদ্বন্দ্বী স্কিল প্ল্যাটফর্মগুলো ওয়েবসাইটে Meta Pixel (`fbq`), Google Analytics (`gtag`), ২৪/৭ AI কোর্স কাউন্সেলর চ্যাটবট এবং ১-ক্লিকে অনলাইন কোর্স এনরোলমেন্ট ও স্টুডেন্ট পোর্টাল ব্যবহার করে হাজারো শিক্ষার্থীকে তাৎক্ষণিক ভর্তি করছে।",
+        "review_pain_points": "শিক্ষার্থী ও অভিভাবকদের প্রধান ভোগান্তি: নতুন ব্যাচের ভর্তি কবে শুরু হবে, আবাসিক স্কলারশিপের শর্ত কী বা কোন কোর্সে কী যোগ্যতা লাগবে তা জানতে হটলাইনে (`+8809610001089`) বা ফেসবুক পেজে মেসেজ দিলে বিপুল চাপে তাৎক্ষণিক উত্তর মেলে না এবং ওয়েবসাইটে কোনো ২৪/৭ AI ভর্তি সহায়ক বট নেই।",
+        "ad_spend_signal": "ফেসবুক পেজে ও আস-সুন্নাহ ফাউন্ডেশনের চ্যানেলে লাখো মানুষের রিচ থাকলেও `assunnahskill.edu.bd` ওয়েবসাইটে Meta Pixel (`fbq`), Google Analytics (`gtag`) এবং অটোমেটেড WhatsApp ভর্তি চ্যাটবট না থাকায় বিশাল সংখ্যক আগ্রহী শিক্ষার্থী ও স্পন্সর ট্র্যাকিংয়ের বাইরে থেকে যাচ্ছে।",
+        "avg_monthly_visitors": 42000,
+        "avg_ticket_bdt": 5000
     }
 ]
 
@@ -817,13 +834,14 @@ CATEGORY_SYNONYM_GROUPS: List[Tuple[str, List[str]]] = [
     ]),
     ("coaching_edtech", [
         "coaching", "education", "edtech", "study", "abroad", "ielts", "mentors", "academy", "institute", "training",
-        "কোচিং", "শিক্ষা", "স্টাডি", "আইইএলটিএস", "একাডেমি", "প্রাইভেট প্রতিষ্ঠান", "কনসালটেন্সি"
+        "skill", "development", "কোচিং", "শিক্ষা", "স্টাডি", "আইইএলটিএস", "একাডেমি", "প্রাইভেট প্রতিষ্ঠান",
+        "কনসালটেন্সি", "স্কিল", "ডেভেলপমেন্ট", "কারিগরি", "প্রশিক্ষণ", "ইনস্টিটিউট"
     ]),
 ]
 
 LOCATION_SYNONYM_GROUPS: List[Tuple[str, List[str]]] = [
     ("dhanmondi", ["dhanmondi", "satmasjid", "green road", "ধানমন্ডি", "গ্রিন রোড", "সাতমসজিদ"]),
-    ("gulshan", ["gulshan", "banani", "গুলশান", "বনানী"]),
+    ("gulshan", ["gulshan", "banani", "badda", "aftabnagar", "গুলশান", "বনানী", "বাড্ডা", "আফতাবনগর"]),
     ("panthapath", ["panthapath", "karwan", "পান্থপথ", "কারওয়ান"]),
     ("mirpur_mohammadpur", ["mirpur", "mohammadpur", "kalabagan", "asad gate", "মিরপুর", "মোহাম্মদপুর", "কলাবাগান", "আসাদ গেট"]),
     ("coxs_bazar", ["cox", "coxsbazar", "kolatoli", "কক্সবাজার", "কলাতলী"]),
@@ -836,9 +854,10 @@ QUERY_STOP_WORDS = {
     "fast", "find", "hunt", "client", "target", "business", "company", "website", "audit",
     "xray", "x-ray", "report", "proposal", "letter", "lead", "bangladesh", "bd", "ltd",
     "limited", "pvt", "branch", "road", "house", "plot", "center", "centre", "group",
-    "the", "and", "for", "with", "from", "run", "point", "live", "scan",
+    "the", "and", "for", "with", "from", "run", "point", "live", "scan", "operation",
     "একটি", "কোম্পানি", "কোম্পানির", "বিজনেস", "অডিট", "এক্স-রে", "প্রপোজাল", "রিপোর্ট",
-    "খুঁজে", "বের", "করো", "দাও", "জন্য", "এবং", "বা", "বাংলাদেশ", "প্রাইভেট"
+    "খুঁজে", "বের", "করো", "দাও", "জন্য", "এবং", "বা", "বাংলাদেশ", "প্রাইভেট",
+    "অপারেশন", "চালাও", "এখন", "তুমি"
 }
 
 
@@ -866,11 +885,12 @@ class ClientHunterAgent:
 
     @staticmethod
     def _score_candidate(item: Dict[str, Any], query_lower: str) -> int:
-        """Scores a business candidate against a category/location/name query with bilingual synonym awareness."""
+        """Scores a business candidate against a category/location/name query with bilingual synonym & brand awareness."""
         item_name = item.get("name", "").lower()
         item_cat = item.get("category", "").lower()
         item_loc = item.get("location", "").lower()
-        item_full = f"{item_name} {item_cat} {item_loc}"
+        item_web = item.get("website", "").lower()
+        item_full = f"{item_name} {item_cat} {item_loc} {item_web}"
 
         # Identify which category groups and location groups are requested in the query
         requested_cats = [
@@ -882,25 +902,15 @@ class ClientHunterAgent:
             if any(s in query_lower for s in syns)
         ]
 
-        score = 0
-        matched_cat = False
+        # Collect all known category/location synonym words so we can distinguish specific brand tokens
+        all_cat_loc_words = set()
+        for _, syns in CATEGORY_SYNONYM_GROUPS:
+            for s in syns:
+                all_cat_loc_words.update(s.split())
+        for _, syns in LOCATION_SYNONYM_GROUPS:
+            for s in syns:
+                all_cat_loc_words.update(s.split())
 
-        if requested_cats:
-            for grp_name, syns in CATEGORY_SYNONYM_GROUPS:
-                if grp_name in requested_cats and any(s in item_full for s in syns):
-                    score += 20
-                    matched_cat = True
-            # If user explicitly asked for a category (e.g. "restaurant dhaka") and this item doesn't match that category, disqualify it
-            if not matched_cat:
-                return 0
-
-        if requested_locs:
-            for grp_name, syns in LOCATION_SYNONYM_GROUPS:
-                if grp_name in requested_locs and any(s in item_full for s in syns):
-                    # Sub-city locations (Sylhet, Cox's Bazar, Dhanmondi, Gulshan) get higher specificity weight than generic "Dhaka"
-                    score += 4 if grp_name == "dhaka" else 12
-
-        # Direct token matching on non-stopword tokens (for specific brand names or niche keywords)
         raw_tokens = [
             t.strip(".,!?:;()[]\"'")
             for t in query_lower.split()
@@ -909,9 +919,41 @@ class ClientHunterAgent:
             t for t in raw_tokens
             if len(t) > 2 and t not in QUERY_STOP_WORDS
         ]
+        brand_tokens = [
+            t for t in meaningful_tokens
+            if t not in all_cat_loc_words
+        ]
+
+        # If the user specified a distinct brand/organization name (e.g. "as-sunnah"), require brand match
+        if brand_tokens:
+            brand_matched = any(
+                (bt in item_name or bt.replace("-", "") in item_name.replace("-", "") or bt in item_web)
+                for bt in brand_tokens
+            )
+            if not brand_matched:
+                return 0
+
+        score = 0
+        matched_cat = False
+
+        if requested_cats:
+            for grp_name, syns in CATEGORY_SYNONYM_GROUPS:
+                if grp_name in requested_cats and any(s in item_full for s in syns):
+                    score += 20
+                    matched_cat = True
+            # If user explicitly asked for a category and this item doesn't match that category, disqualify it
+            if not matched_cat and not brand_tokens:
+                return 0
+
+        if requested_locs:
+            for grp_name, syns in LOCATION_SYNONYM_GROUPS:
+                if grp_name in requested_locs and any(s in item_full for s in syns):
+                    # Sub-city locations (Sylhet, Cox's Bazar, Dhanmondi, Gulshan) get higher specificity weight than generic "Dhaka"
+                    score += 4 if grp_name == "dhaka" else 12
+
         for tok in meaningful_tokens:
-            if tok in item_name:
-                score += 15
+            if tok in item_name or tok.replace("-", "") in item_name.replace("-", "") or tok in item_web:
+                score += 25
             elif tok in item_cat:
                 score += 8
             elif not requested_cats and tok in item_loc:
@@ -971,6 +1013,15 @@ class ClientHunterAgent:
                     scored.append((s, -idx, dict(item)))
             scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
             candidates = [entry[2] for entry in scored]
+
+            # If user explicitly named a specific brand in REAL_TARGET_BUSINESS_POOL that was previously scanned, allow direct lookup
+            if not candidates:
+                for idx, item in enumerate(REAL_TARGET_BUSINESS_POOL):
+                    s = self._score_candidate(item, q_lower)
+                    if s >= 35:  # High-confidence brand match
+                        scored.append((s, -idx, dict(item)))
+                scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                candidates = [entry[2] for entry in scored]
         else:
             for item in REAL_TARGET_BUSINESS_POOL:
                 if not self.store.is_scanned(item["name"], item.get("website", "")):

@@ -49,17 +49,61 @@ def get_session_id(user_id: int) -> str:
     """Returns a unique, persistent SQLite session ID for the Telegram user."""
     return f"telegram_{user_id}"
 
+_DUMMY_TEST_CHAT_IDS = {12345, 777, 888777666, 999888777}
+
 def register_daily_subscriber(chat_id: int):
-    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
+    """Saves real chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
+    if not chat_id or int(chat_id) in _DUMMY_TEST_CHAT_IDS:
+        return
     mem = MemoryManager()
     try:
         raw = mem.get_preference("daily_hackathon_subscribers", "[]")
         subscribers = json.loads(raw) if raw else []
-        if chat_id not in subscribers:
-            subscribers.append(chat_id)
-            mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
+        subscribers = [int(cid) for cid in subscribers if int(cid) not in _DUMMY_TEST_CHAT_IDS]
+        if int(chat_id) not in subscribers:
+            subscribers.append(int(chat_id))
+        mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
     except Exception as e:
         logger.warning(f"Failed to register daily subscriber {chat_id}: {e}")
+
+def get_all_daily_subscribers(mem: Optional[MemoryManager] = None) -> List[int]:
+    """Returns all real Telegram subscriber chat_ids from preferences and existing telegram_<id> sessions."""
+    mem = mem or MemoryManager()
+    result_ids: List[int] = []
+    try:
+        raw = mem.get_preference("daily_hackathon_subscribers", "[]")
+        pref_ids = json.loads(raw) if raw else []
+        for cid in pref_ids:
+            cid_int = int(cid)
+            if cid_int not in _DUMMY_TEST_CHAT_IDS and cid_int not in result_ids:
+                result_ids.append(cid_int)
+    except Exception:
+        pass
+    try:
+        for sess in mem.get_all_sessions():
+            sid = str(sess.get("id", ""))
+            if sid.startswith("telegram_"):
+                num_part = sid.replace("telegram_", "").strip()
+                if num_part.isdigit():
+                    cid_int = int(num_part)
+                    if cid_int not in _DUMMY_TEST_CHAT_IDS and cid_int not in result_ids:
+                        result_ids.append(cid_int)
+    except Exception:
+        pass
+    return result_ids
+
+def _is_direct_client_hunt_query(text: str) -> bool:
+    """Detects if a free-text or voice message is asking for a Business X-Ray / ClientHunter operation."""
+    if not text:
+        return False
+    lowered = text.lower()
+    xray_keywords = [
+        "এক্স-রে", "এক্স রে", "এক্সরে", "x-ray", "xray",
+        "client hunter", "clienthunter", "ক্লায়েন্ট হান্টার", "ক্লায়েন্ট হান্টার",
+        "বিজনেস অডিট", "business audit", "website audit", "লিড হান্ট"
+    ]
+    return any(kw in lowered for kw in xray_keywords)
+
 
 async def safe_send_telegram_text(
     bot: Any,
@@ -319,6 +363,19 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await status_msg.edit_text(f"🗣️ **শনাক্তকৃত কথা:** \"_{transcribed_text}_\"\n\n🧠 উত্তর তৈরি হচ্ছে...", parse_mode=ParseMode.MARKDOWN)
         await message.chat.send_chat_action(ChatAction.TYPING)
 
+        if _is_direct_client_hunt_query(transcribed_text):
+            await execute_and_send_client_hunt(
+                context.application,
+                chat_id=message.chat_id,
+                query_str=transcribed_text,
+                delay_seconds=10
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            return
+
         # Run multi-agent orchestrator in thread pool to avoid blocking asyncio event loop
         mem = MemoryManager()
         orch = MasterOrchestrator(memory_manager=mem, model=get_active_model())
@@ -377,6 +434,20 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
     try:
+        if _is_direct_client_hunt_query(user_text):
+            await execute_and_send_client_hunt(
+                context.application,
+                chat_id=message.chat_id,
+                query_str=user_text,
+                delay_seconds=10
+            )
+            if status_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            return
+
         mem = MemoryManager()
         orch = MasterOrchestrator(memory_manager=mem, model=get_active_model())
 
@@ -618,8 +689,7 @@ async def daily_hackathon_scheduler_loop(app: Application):
             # Trigger every day at 06:00 AM (UTC+6)
             if now_bd.hour == 6 and now_bd.minute == 0 and last_sent != today_str:
                 logger.info(f"06:00 AM reached ({today_str})! Scouting hackathons and sending daily briefings...")
-                raw_subs = mem.get_preference("daily_hackathon_subscribers", "[]")
-                subscribers = json.loads(raw_subs) if raw_subs else []
+                subscribers = get_all_daily_subscribers(mem)
 
                 for cid in subscribers:
                     try:
@@ -651,8 +721,7 @@ async def daily_client_hunter_scheduler_loop(app: Application):
             # Trigger every day at 07:00 AM (Asia/Dhaka, UTC+6)
             if now_bd.hour == 7 and now_bd.minute == 0 and last_hunt_date != today_str:
                 logger.info(f"07:00 AM BD Time reached ({today_str})! Running Daily ClientHunter & Business X-Ray...")
-                raw_subs = mem.get_preference("daily_hackathon_subscribers", "[]")
-                subscribers = json.loads(raw_subs) if raw_subs else []
+                subscribers = get_all_daily_subscribers(mem)
 
                 if subscribers:
                     agent = ClientHunterAgent(model=get_active_model())
