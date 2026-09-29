@@ -47,20 +47,55 @@ FEATURED_HACKATHONS = [
     }
 ]
 
+_HACKATHON_QUERY_STOPWORDS = {
+    "find", "search", "best", "top", "live", "active", "upcoming", "hackathon", "hackathons",
+    "competition", "competitions", "challenge", "devpost", "kaggle", "lablab", "roadmap",
+    "idea", "ideas", "winning", "mentor", "project", "48h", "24h", "the", "and", "for", "with"
+}
+
+
+_BENGALI_TECH_TOPIC_MAP = {
+    "এআই": "ai",
+    "কৃত্রিম বুদ্ধিমত্তা": "ai",
+    "মেশিন লার্নিং": "machine",
+    "ওয়েব৩": "web3",
+    "ওয়েব৩": "web3",
+    "ব্লকচেইন": "blockchain",
+    "পাইথন": "python",
+    "এজেন্ট": "agent",
+    "সাইবার": "cyber"
+}
+
+
+def _extract_filter_keywords(query: str) -> List[str]:
+    """Extracts meaningful topic keywords from a user query (ignoring generic Bengali sentence words & stopwords)."""
+    if not query:
+        return []
+    q_low = query.lower()
+    ascii_words = [w for w in re.findall(r"[a-zA-Z0-9\+#\.]{2,}", q_low) if w not in _HACKATHON_QUERY_STOPWORDS]
+    for bn_term, en_kw in _BENGALI_TECH_TOPIC_MAP.items():
+        if bn_term in q_low and en_kw not in ascii_words:
+            ascii_words.append(en_kw)
+    return ascii_words
+
+
 def fetch_devpost_hackathons(query: str = "", limit: int = 5) -> List[Dict[str, Any]]:
     """Fetches live and upcoming hackathons using Devpost RSS with fallback to live web search.
     
     Args:
-        query: Optional filter or interest keyword (e.g. 'AI', 'Beginner', 'Agents').
+        query: Optional filter or interest keyword (e.g. 'AI', 'Beginner', 'Agents', or Bengali prompt).
         limit: Max number of hackathons to return (default: 5).
         
     Returns:
         List of hackathon metadata dictionaries.
     """
-    hackathons = []
+    hackathons: List[Dict[str, Any]] = []
+    seen_urls = set()
+    filter_keywords = _extract_filter_keywords(query)
 
     # 1. Try Devpost Public RSS feed
     rss_url = "https://devpost.com/hackathons.rss"
+    rss_all_items: List[Dict[str, Any]] = []
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -90,33 +125,49 @@ def fetch_devpost_hackathons(query: str = "", limit: int = 5) -> List[Dict[str, 
                 clean_desc = re.sub(r"<[^>]+>", " ", desc).strip()
                 clean_desc = re.sub(r"\s+", " ", clean_desc)[:200]
 
-                if not query or query.lower() in title.lower() or query.lower() in clean_desc.lower():
-                    hackathons.append({
-                        "title": title,
-                        "url": link,
-                        "prize": prize,
-                        "deadline": pub_date,
-                        "themes": clean_desc or "Open Challenge",
-                        "platform": "Devpost",
-                        "mode": "Online"
-                    })
+                entry = {
+                    "title": title,
+                    "url": link,
+                    "prize": prize,
+                    "deadline": pub_date,
+                    "themes": clean_desc or "Open Challenge",
+                    "platform": "Devpost",
+                    "mode": "Online"
+                }
+                rss_all_items.append(entry)
+
+                combined_text = f"{title} {clean_desc}".lower()
+                if not filter_keywords or any(kw in combined_text for kw in filter_keywords):
+                    if link.lower() not in seen_urls:
+                        seen_urls.add(link.lower())
+                        hackathons.append(entry)
 
                 if len(hackathons) >= limit:
                     break
+
+            # If specific keywords were too narrow for the RSS feed, backfill from live RSS items
+            if not hackathons and rss_all_items:
+                for entry in rss_all_items[:limit]:
+                    u = entry["url"].lower()
+                    if u not in seen_urls:
+                        seen_urls.add(u)
+                        hackathons.append(entry)
     except Exception as e:
         logger.debug(f"Devpost RSS fetch note (switching to live search fallback): {e}")
 
     # 2. If RSS didn't yield enough, enrich with targeted web search
     if len(hackathons) < limit:
-        search_query = f"{query} hackathons 2026 devpost lablab kaggle" if query else "best live AI hackathons 2026 devpost lablab"
+        topic_str = " ".join(filter_keywords[:4])
+        search_query = f"{topic_str} hackathons 2026 devpost lablab kaggle".strip() if topic_str else "best live AI hackathons 2026 devpost lablab"
         search_results = web_search(search_query, max_results=limit)
-        for r in search_results:
-            url = r.get("url", "")
-            title = r.get("title", "")
-            snippet = r.get("snippet", "")
-            if url and ("devpost" in url.lower() or "lablab" in url.lower() or "kaggle" in url.lower() or "hackathon" in url.lower()):
+        for r in search_results or []:
+            url = (r.get("url") or "").strip()
+            title = (r.get("title") or "").strip()
+            snippet = (r.get("snippet") or "").strip()
+            if url and url.lower() not in seen_urls and ("devpost" in url.lower() or "lablab" in url.lower() or "kaggle" in url.lower() or "hackathon" in url.lower()):
+                seen_urls.add(url.lower())
                 hackathons.append({
-                    "title": title,
+                    "title": title or "Global AI Hackathon",
                     "url": url,
                     "prize": "Check Event Page",
                     "deadline": "2026 Live/Upcoming",
@@ -130,12 +181,15 @@ def fetch_devpost_hackathons(query: str = "", limit: int = 5) -> List[Dict[str, 
     # 3. If still empty, supply premier featured hackathons
     if not hackathons:
         for fh in FEATURED_HACKATHONS:
-            if not query or query.lower() in fh["title"].lower() or query.lower() in fh["themes"].lower():
-                hackathons.append(fh)
+            combined_fh = f"{fh['title']} {fh['themes']}".lower()
+            if not filter_keywords or any(kw in combined_fh for kw in filter_keywords):
+                if fh["url"].lower() not in seen_urls:
+                    seen_urls.add(fh["url"].lower())
+                    hackathons.append(dict(fh))
             if len(hackathons) >= limit:
                 break
         if not hackathons:
-            hackathons = FEATURED_HACKATHONS[:limit]
+            hackathons = [dict(x) for x in FEATURED_HACKATHONS[:limit]]
 
     return hackathons[:limit]
 

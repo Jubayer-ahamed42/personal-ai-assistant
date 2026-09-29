@@ -155,6 +155,8 @@ Instructions:
                     model=self.model,
                     temperature=0.4
                 )
+                if not final_report or final_report.strip().startswith("⚠️"):
+                    raise RuntimeError("Direct conversation LLM returned error or empty string")
             except Exception as dir_err:
                 logger.error(f"Direct conversation error: {dir_err}")
                 final_report = "আসসালামু আলাইকুম স্যার! আমি আপনার SMART AI ASSISTANT। আমি সর্বদা আপনার সেবায় আন্তরিকভাবে প্রস্তুত আছি, স্যার। আমাকে যেকোনো নির্দেশ দিন।"
@@ -229,9 +231,13 @@ Respond ONLY with a JSON object:
                 model=self.model,
                 temperature=0.1
             )
+            if not raw_plan or raw_plan.strip().startswith("⚠️"):
+                raise RuntimeError("Planner LLM returned error or empty string")
             json_match = re.search(r"\{.*\}", raw_plan, re.DOTALL)
             clean_plan = json_match.group(0) if json_match else raw_plan.strip()
             plan = json.loads(clean_plan)
+            if not isinstance(plan, dict) or not isinstance(plan.get("subtasks"), list) or len(plan["subtasks"]) == 0:
+                raise ValueError("Plan missing non-empty subtasks list")
         except Exception:
             is_hunt = any(k in user_command.lower() for k in ["hunt", "client", "xray", "x-ray", "audit", "ক্লায়েন্ট", "ক্লায়েন্ট", "অডিট", "এক্স-রে", "প্রপোজাল", "লিড"])
             is_hack = any(k in user_command.lower() for k in ["hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab", "প্রতিযোগিতা", "রোডম্যাপ"])
@@ -253,9 +259,9 @@ Respond ONLY with a JSON object:
         # Dispatch tasks to Sub-Agents with Self-Correction Feedback Loop
         for task_idx, task in enumerate(plan.get("subtasks", [])):
             agent_type = task.get("agent")
-            task_desc = task.get("task_description")
+            task_desc = task.get("task_description") or user_command
 
-            notify("subagent_start", f"দায়িত্ব দেওয়া হলো: {agent_type.upper()} স্পেশালিস্ট...", {"subtask": task})
+            notify("subagent_start", f"দায়িত্ব দেওয়া হলো: {str(agent_type or 'research').upper()} স্পেশালিস্ট...", {"subtask": task})
 
             current_critique = None
             task_success = False
@@ -352,7 +358,7 @@ When referencing yourself, always write SMART AI ASSISTANT in all capital letter
 {user_command}
 
 [VERIFIED SUB-AGENT FINDINGS]:
-{json.dumps([{'task': r['task']['task_description'], 'findings': r['output']} for r in sub_agent_results], indent=2)}
+{json.dumps([{'task': r['task'].get('task_description', user_command), 'findings': r['output']} for r in sub_agent_results], indent=2, ensure_ascii=False)}
 
 [USER GUIDELINES]:
 {user_rules}
@@ -373,14 +379,19 @@ Formatting Requirements:
                     model=self.model,
                     temperature=0.2
                 )
+                if not final_report or final_report.strip().startswith("⚠️"):
+                    raise RuntimeError("Synthesis LLM returned error or empty string")
             except Exception as synth_err:
                 logger.error(f"Synthesis call error: {synth_err}")
                 findings_text = "\n\n".join([r.get("output", "") for r in sub_agent_results if r.get("output")])
-                final_report = (
-                    f"আসসালামু আলাইকুম স্যার!\n\n"
-                    f"আপনার নির্দেশিত কাজটি স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সম্পন্ন করেছে। বিস্তারিত প্রতিবেদন:\n\n"
-                    f"{findings_text}"
-                )
+                if findings_text.strip().startswith("আসসালামু আলাইকুম"):
+                    final_report = findings_text
+                else:
+                    final_report = (
+                        f"আসসালামু আলাইকুম স্যার!\n\n"
+                        f"আপনার নির্দেশিত কাজটি স্পেশালিস্ট সাব-এজেন্ট স্কোয়াড সম্পন্ন করেছে। বিস্তারিত প্রতিবেদন:\n\n"
+                        f"{findings_text}"
+                    )
 
         # Generate voice audio for the final report summary
         notify("voice", "ভয়েস অডিও প্রস্তুত করা হচ্ছে...")

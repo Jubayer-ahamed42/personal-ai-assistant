@@ -867,9 +867,13 @@ QUERY_STOP_WORDS = {
     "xray", "x-ray", "report", "proposal", "letter", "lead", "bangladesh", "bd", "ltd",
     "limited", "pvt", "branch", "road", "house", "plot", "center", "centre", "group",
     "the", "and", "for", "with", "from", "run", "point", "live", "scan", "operation",
+    "commercial", "best", "top", "new", "today", "price", "pricing", "full",
     "একটি", "কোম্পানি", "কোম্পানির", "বিজনেস", "অডিট", "এক্স-রে", "প্রপোজাল", "রিপোর্ট",
     "খুঁজে", "বের", "করো", "দাও", "জন্য", "এবং", "বা", "বাংলাদেশ", "প্রাইভেট",
-    "অপারেশন", "চালাও", "এখন", "তুমি"
+    "অপারেশন", "চালাও", "এখন", "তুমি", "আজকের", "কমার্শিয়াল", "কমার্শিয়াল", "কর্পোরেট",
+    "পূর্ণাঙ্গ", "প্রাইসিং", "সেরা", "ভালো", "নতুন", "পাঠাও", "দেখাও", "তৈরি", "সামনে",
+    "পেশ", "ফলাফল", "কতটুকু", "লিড", "সার্ভিস", "ব্যবসা", "ব্যবসায়িক", "সেন্টার", "সেন্টারের",
+    "লিমিটেড", "গ্রুপ", "শাখা", "ব্রাঞ্চ"
 }
 
 
@@ -918,10 +922,14 @@ class ClientHunterAgent:
         all_cat_loc_words = set()
         for _, syns in CATEGORY_SYNONYM_GROUPS:
             for s in syns:
-                all_cat_loc_words.update(s.split())
+                for w in s.split():
+                    if len(w) >= 2:
+                        all_cat_loc_words.add(w)
         for _, syns in LOCATION_SYNONYM_GROUPS:
             for s in syns:
-                all_cat_loc_words.update(s.split())
+                for w in s.split():
+                    if len(w) >= 2:
+                        all_cat_loc_words.add(w)
 
         raw_tokens = [
             t.strip(".,!?:;()[]\"'")
@@ -931,16 +939,18 @@ class ClientHunterAgent:
             t for t in raw_tokens
             if len(t) > 2 and t not in QUERY_STOP_WORDS
         ]
-        brand_tokens = [
+        ascii_brand_tokens = [
             t for t in meaningful_tokens
-            if t not in all_cat_loc_words
+            if t.isascii()
+            and not any((w in t or t in w) for w in all_cat_loc_words)
+            and not any(sw in t for sw in QUERY_STOP_WORDS if len(sw) >= 4)
         ]
 
-        # If the user specified a distinct brand/organization name (e.g. "as-sunnah"), require brand match
-        if brand_tokens:
+        # If the user specified an explicit ASCII brand/company name (e.g. "popular", "sheltech", "sailor"), require brand match
+        if ascii_brand_tokens:
             brand_matched = any(
                 (bt in item_name or bt.replace("-", "") in item_name.replace("-", "") or bt in item_web)
-                for bt in brand_tokens
+                for bt in ascii_brand_tokens
             )
             if not brand_matched:
                 return 0
@@ -954,7 +964,7 @@ class ClientHunterAgent:
                     score += 20
                     matched_cat = True
             # If user explicitly asked for a category and this item doesn't match that category, disqualify it
-            if not matched_cat and not brand_tokens:
+            if not matched_cat and not ascii_brand_tokens:
                 return 0
 
         if requested_locs:
@@ -978,9 +988,9 @@ class ClientHunterAgent:
         clean_query = (query or "").strip()
         clean_query = re.sub(r"\bfast\b", "", clean_query, flags=re.IGNORECASE).strip()
 
-        # 0. Check if user passed a direct website URL or domain (supports subdomains like www. or portal. and BD/global TLDs)
+        # 0. Check if user passed a direct commercial website URL or domain
         url_match = re.search(
-            r"(https?://[^\s]+|\b(?:[a-zA-Z0-9\-]+\.)+(?:com\.bd|edu\.bd|org\.bd|net\.bd|ac\.bd|gov\.bd|com|org|net|io|ai|co|clothing|health|bd|shop|store|xyz|info|biz)\b[^\s]*)",
+            r"(https?://[^\s]+|\b(?:[a-zA-Z0-9\-]+\.)+(?:com\.bd|net\.bd|com|net|io|ai|co|clothing|health|bd|shop|store|xyz|info|biz)\b[^\s]*)",
             clean_query,
             re.IGNORECASE
         )
@@ -988,28 +998,29 @@ class ClientHunterAgent:
             raw_url = url_match.group(1).strip().rstrip(".,;)")
             norm_url = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
             domain = ScannedCompanyStore.normalize_domain(norm_url)
-            for item in REAL_TARGET_BUSINESS_POOL:
-                if ScannedCompanyStore.normalize_domain(item.get("website", "")) == domain:
-                    return dict(item)
-            title_guess = domain.split(".")[0].replace("-", " ").title() or "Target Business"
-            return {
-                "name": f"{title_guess} ({domain})",
-                "category": "টার্গেট বিজনেস ও অনলাইন সার্ভিস (Target Business)",
-                "location": "Dhaka / Bangladesh",
-                "website": norm_url,
-                "facebook": f"https://www.facebook.com/search/top?q={urllib.parse.quote(title_guess)}",
-                "phone": "+880 1711-000000",
-                "whatsapp_phone": "8801711000000",
-                "email": f"info@{domain or 'company.com'}",
-                "decision_maker": "Managing Director / Founder & Head of Digital",
-                "competitor_name": "শীর্ষস্থানীয় ডিজিটাল অটোমেটেড প্রতিদ্বন্দ্বী",
-                "competitor_advantage": "প্রতিদ্বন্দ্বীরা মেটা পিক্সেল রিটার্গেটিং, ২৪/৭ AI হোয়াটসঅ্যাপ চ্যাটবট এবং অনলাইন বুকিং ফানেল ব্যবহার করে এগিয়ে আছে।",
-                "review_pain_points": "কাস্টমাররা দ্রুত রিপ্লাই না পাওয়া, ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়া এবং তথ্যের ঘাটতি নিয়ে অভিযোগ করছেন।",
-                "ad_spend_signal": "সোশ্যাল মিডিয়ায় প্রমোশন চললেও ওয়েবসাইটে কনভার্সন ট্র্যাকিং ও অটোমেশন অনুপস্থিত।",
-                "avg_monthly_visitors": 18000,
-                "avg_ticket_bdt": 2500,
-                "_is_dynamic": True
-            }
+            if is_commercial_business(domain, norm_url):
+                for item in REAL_TARGET_BUSINESS_POOL:
+                    if ScannedCompanyStore.normalize_domain(item.get("website", "")) == domain:
+                        return dict(item)
+                title_guess = domain.split(".")[0].replace("-", " ").title() or "Target Business"
+                return {
+                    "name": f"{title_guess} ({domain})",
+                    "category": "টার্গেট বিজনেস ও অনলাইন সার্ভিস (Target Business)",
+                    "location": "Dhaka / Bangladesh",
+                    "website": norm_url,
+                    "facebook": f"https://www.facebook.com/search/top?q={urllib.parse.quote(title_guess)}",
+                    "phone": "+880 1711-000000",
+                    "whatsapp_phone": "8801711000000",
+                    "email": f"info@{domain or 'company.com'}",
+                    "decision_maker": "Managing Director / Founder & Head of Digital",
+                    "competitor_name": "শীর্ষস্থানীয় ডিজিটাল অটোমেটেড প্রতিদ্বন্দ্বী",
+                    "competitor_advantage": "প্রতিদ্বন্দ্বীরা মেটা পিক্সেল রিটার্গেটিং, ২৪/৭ AI হোয়াটসঅ্যাপ চ্যাটবট এবং অনলাইন বুকিং ফানেল ব্যবহার করে এগিয়ে আছে।",
+                    "review_pain_points": "কাস্টমাররা দ্রুত রিপ্লাই না পাওয়া, ম্যানুয়াল বুকিং/অর্ডার প্রক্রিয়া এবং তথ্যের ঘাটতি নিয়ে অভিযোগ করছেন।",
+                    "ad_spend_signal": "সোশ্যাল মিডিয়ায় প্রমোশন চললেও ওয়েবসাইটে কনভার্সন ট্র্যাকিং ও অটোমেশন অনুপস্থিত।",
+                    "avg_monthly_visitors": 18000,
+                    "avg_ticket_bdt": 2500,
+                    "_is_dynamic": True
+                }
 
         candidates: List[Dict[str, Any]] = []
 
