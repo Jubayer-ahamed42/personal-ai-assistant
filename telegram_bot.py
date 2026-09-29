@@ -22,7 +22,12 @@ from telegram.ext import (
     filters,
 )
 
-from config import get_active_model
+from config import (
+    get_active_model,
+    DEFAULT_SUBSCRIBER_CHAT_IDS,
+    SUBSCRIBERS_JSON_PATH,
+    DAILY_DISPATCH_STATE_PATH,
+)
 from database.memory import MemoryManager
 from agents.orchestrator import MasterOrchestrator
 from agents.hackathon_agent import HackathonAgent
@@ -51,8 +56,39 @@ def get_session_id(user_id: int) -> str:
 
 _DUMMY_TEST_CHAT_IDS = {12345, 777, 888777666, 999888777}
 
+def _read_json_subscribers() -> List[int]:
+    """Reads subscriber chat_ids from persistent JSON file."""
+    try:
+        if SUBSCRIBERS_JSON_PATH.exists():
+            data = json.loads(SUBSCRIBERS_JSON_PATH.read_text(encoding="utf-8"))
+            raw_list = data.get("subscribers", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            return [int(x) for x in raw_list if str(x).strip().lstrip("-").isdigit()]
+    except Exception as e:
+        logger.debug(f"Could not read subscribers JSON: {e}")
+    return []
+
+def _write_json_subscriber(chat_id: int):
+    """Persists a real subscriber chat_id to data/telegram_subscribers.json."""
+    if not chat_id or int(chat_id) in _DUMMY_TEST_CHAT_IDS:
+        return
+    try:
+        SUBSCRIBERS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing = _read_json_subscribers()
+        for def_id in DEFAULT_SUBSCRIBER_CHAT_IDS:
+            if int(def_id) not in existing and int(def_id) not in _DUMMY_TEST_CHAT_IDS:
+                existing.append(int(def_id))
+        if int(chat_id) not in existing:
+            existing.append(int(chat_id))
+        payload = {
+            "subscribers": existing,
+            "updated_at": datetime.now(timezone(timedelta(hours=6))).isoformat()
+        }
+        SUBSCRIBERS_JSON_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not write subscribers JSON: {e}")
+
 def register_daily_subscriber(chat_id: int):
-    """Saves chat_id to SQLite memory for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
+    """Saves chat_id to SQLite memory and JSON file for automated 6:00 AM hackathon & 7:00 AM ClientHunter notifications."""
     if not chat_id:
         return
     mem = MemoryManager()
@@ -64,11 +100,25 @@ def register_daily_subscriber(chat_id: int):
             mem.set_preference("daily_hackathon_subscribers", json.dumps(subscribers))
     except Exception as e:
         logger.warning(f"Failed to register daily subscriber {chat_id}: {e}")
+    _write_json_subscriber(int(chat_id))
 
 def get_all_daily_subscribers(mem: Optional[MemoryManager] = None) -> List[int]:
-    """Returns all real Telegram subscriber chat_ids from preferences and existing telegram_<id> sessions."""
+    """Returns all real Telegram subscriber chat_ids from DEFAULT_SUBSCRIBER_CHAT_IDS, JSON file, SQLite preferences, and sessions."""
     mem = mem or MemoryManager()
     result_ids: List[int] = []
+
+    # 1. Always include permanent default subscriber IDs (survives Render restarts)
+    for def_cid in DEFAULT_SUBSCRIBER_CHAT_IDS:
+        cid_int = int(def_cid)
+        if cid_int not in _DUMMY_TEST_CHAT_IDS and cid_int not in result_ids:
+            result_ids.append(cid_int)
+
+    # 2. Merge from persistent JSON file (data/telegram_subscribers.json)
+    for j_cid in _read_json_subscribers():
+        if j_cid not in _DUMMY_TEST_CHAT_IDS and j_cid not in result_ids:
+            result_ids.append(j_cid)
+
+    # 3. Merge from SQLite user_preferences
     try:
         raw = mem.get_preference("daily_hackathon_subscribers", "[]")
         pref_ids = json.loads(raw) if raw else []
@@ -78,6 +128,8 @@ def get_all_daily_subscribers(mem: Optional[MemoryManager] = None) -> List[int]:
                 result_ids.append(cid_int)
     except Exception:
         pass
+
+    # 4. Merge from SQLite sessions table (telegram_<chat_id>)
     try:
         for sess in mem.get_all_sessions():
             sid = str(sess.get("id", ""))
@@ -90,6 +142,45 @@ def get_all_daily_subscribers(mem: Optional[MemoryManager] = None) -> List[int]:
     except Exception:
         pass
     return result_ids
+
+def _get_last_dispatch_date(key: str, mem: MemoryManager) -> str:
+    """Reads last dispatch date from SQLite or persistent JSON state file."""
+    val = ""
+    try:
+        val = mem.get_preference(key, "") or ""
+    except Exception:
+        pass
+    if val:
+        return val
+    try:
+        if DAILY_DISPATCH_STATE_PATH.exists():
+            data = json.loads(DAILY_DISPATCH_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return str(data.get(key, "") or "")
+    except Exception:
+        pass
+    return ""
+
+def _set_last_dispatch_date(key: str, today_str: str, mem: MemoryManager):
+    """Persists last dispatch date to both SQLite and JSON state file."""
+    try:
+        mem.set_preference(key, today_str)
+    except Exception:
+        pass
+    try:
+        DAILY_DISPATCH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data: Dict[str, Any] = {}
+        if DAILY_DISPATCH_STATE_PATH.exists():
+            raw = DAILY_DISPATCH_STATE_PATH.read_text(encoding="utf-8")
+            if raw.strip():
+                loaded = json.loads(raw)
+                if isinstance(loaded, dict):
+                    data = loaded
+        data[key] = today_str
+        data["updated_at"] = datetime.now(timezone(timedelta(hours=6))).isoformat()
+        DAILY_DISPATCH_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not write dispatch state JSON: {e}")
 
 def _is_direct_client_hunt_query(text: str) -> bool:
     """Detects if a free-text or voice message is asking for a Business X-Ray / ClientHunter operation."""
@@ -674,8 +765,10 @@ async def hunt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"⚠️ আসসালামু আলাইকুম স্যার, ক্লায়েন্ট হান্ট অডিটে ত্রুটি হয়েছে: {str(e)}")
 
 async def daily_hackathon_scheduler_loop(app: Application):
-    """Runs 24/7 in background to trigger daily hackathon briefing at 6:00 AM (UTC+6 / Bangladesh Time)."""
-    logger.info("Daily 6:00 AM Hackathon Scheduler Loop initialized (UTC+6).")
+    """Runs 24/7 in background to trigger daily hackathon briefing at or after 6:00 AM (UTC+6 / Bangladesh Time)
+    with a Smart Catch-Up Window so delayed startups or sleeping containers never miss today's report.
+    """
+    logger.info("Daily 6:00 AM Hackathon Scheduler Loop initialized with Smart Catch-Up Window (UTC+6).")
     BD_TZ = timezone(timedelta(hours=6))
     mem = MemoryManager()
 
@@ -683,31 +776,34 @@ async def daily_hackathon_scheduler_loop(app: Application):
         try:
             now_bd = datetime.now(BD_TZ)
             today_str = now_bd.strftime("%Y-%m-%d")
-            last_sent = mem.get_preference("last_daily_hackathon_date", "")
+            last_sent = _get_last_dispatch_date("last_daily_hackathon_date", mem)
 
-            # Trigger every day at 06:00 AM (UTC+6)
-            if now_bd.hour == 6 and now_bd.minute == 0 and last_sent != today_str:
-                logger.info(f"06:00 AM reached ({today_str})! Scouting hackathons and sending daily briefings...")
+            # Smart Catch-Up Window: Trigger if 06:00 AM or later (UTC+6) and today's briefing has not been sent yet
+            if now_bd.hour >= 6 and last_sent != today_str:
+                logger.info(f"06:00 AM+ window active ({today_str})! Scouting hackathons and sending daily briefings...")
                 subscribers = get_all_daily_subscribers(mem)
+                sent_count = 0
 
                 for cid in subscribers:
                     try:
                         await send_daily_hackathon_briefing(app, cid)
+                        sent_count += 1
                     except Exception as sub_err:
                         logger.error(f"Failed to send 6:00 AM briefing to chat {cid}: {sub_err}")
 
-                mem.set_preference("last_daily_hackathon_date", today_str)
-                await asyncio.sleep(65)  # Avoid duplicate trigger in the same minute
+                if sent_count > 0 or not subscribers:
+                    _set_last_dispatch_date("last_daily_hackathon_date", today_str, mem)
+                await asyncio.sleep(65)
         except Exception as loop_err:
             logger.error(f"Scheduler loop error: {loop_err}")
 
         await asyncio.sleep(25)
 
 async def daily_client_hunter_scheduler_loop(app: Application):
-    """Runs 24/7 in background to trigger ClientHunter & Business X-Ray every day at 7:00 AM (Asia/Dhaka, UTC+6)
-    and automatically delivers the 2nd Proposal Letter message 10 minutes later at 7:10 AM (600s delay).
+    """Runs 24/7 in background to trigger ClientHunter & Business X-Ray every day at or after 7:00 AM (Asia/Dhaka, UTC+6)
+    with a Smart Catch-Up Window, and automatically delivers the 2nd Proposal Letter message 10 minutes later (600s delay).
     """
-    logger.info("Daily 7:00 AM / 7:10 AM ClientHunter & Business X-Ray Scheduler Loop initialized (UTC+6).")
+    logger.info("Daily 7:00 AM / 7:10 AM ClientHunter & Business X-Ray Scheduler Loop initialized with Smart Catch-Up Window (UTC+6).")
     BD_TZ = timezone(timedelta(hours=6))
     mem = MemoryManager()
 
@@ -715,12 +811,13 @@ async def daily_client_hunter_scheduler_loop(app: Application):
         try:
             now_bd = datetime.now(BD_TZ)
             today_str = now_bd.strftime("%Y-%m-%d")
-            last_hunt_date = mem.get_preference("last_daily_client_hunt_date", "")
+            last_hunt_date = _get_last_dispatch_date("last_daily_client_hunt_date", mem)
 
-            # Trigger every day at 07:00 AM (Asia/Dhaka, UTC+6)
-            if now_bd.hour == 7 and now_bd.minute == 0 and last_hunt_date != today_str:
-                logger.info(f"07:00 AM BD Time reached ({today_str})! Running Daily ClientHunter & Business X-Ray...")
+            # Smart Catch-Up Window: Trigger if 07:00 AM or later (Asia/Dhaka, UTC+6) and today's hunt report has not been sent yet
+            if now_bd.hour >= 7 and last_hunt_date != today_str:
+                logger.info(f"07:00 AM+ BD Time window active ({today_str})! Running Daily ClientHunter & Business X-Ray...")
                 subscribers = get_all_daily_subscribers(mem)
+                sent_count = 0
 
                 if subscribers:
                     agent = ClientHunterAgent(model=get_active_model())
@@ -730,15 +827,17 @@ async def daily_client_hunter_scheduler_loop(app: Application):
                         try:
                             chat_wf = dict(workflow_data)
                             chat_wf["step2_sent"] = False
-                            # Step 1 at 7:00 AM: Full Business X-Ray Audit, Solutions & Pricing Report
+                            # Step 1: Full Business X-Ray Audit, Solutions & Pricing Report
                             await send_client_hunter_step1(app, cid, chat_wf, delay_seconds=600)
-                            # Step 2 scheduled for 7:10 AM (exactly 600 seconds / 10 minutes later)
+                            # Step 2 scheduled for 10 minutes later (600 seconds)
                             _schedule_step2_for_chat(app, cid, chat_wf, delay_seconds=600)
+                            sent_count += 1
                         except Exception as sub_err:
                             logger.error(f"Failed to send 7:00 AM ClientHunter report to chat {cid}: {sub_err}")
 
-                mem.set_preference("last_daily_client_hunt_date", today_str)
-                await asyncio.sleep(65)  # Avoid duplicate trigger in the same minute
+                if sent_count > 0 or not subscribers:
+                    _set_last_dispatch_date("last_daily_client_hunt_date", today_str, mem)
+                await asyncio.sleep(65)
         except Exception as loop_err:
             logger.error(f"ClientHunter scheduler loop error: {loop_err}")
 

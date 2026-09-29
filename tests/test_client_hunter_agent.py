@@ -381,3 +381,25 @@ def test_evaluator_deterministic_approval_for_client_hunter(tmp_path: Path):
     assert eval_res["average_score"] >= 4.8
 
 
+def test_strictly_commercial_businesses_only():
+    """Verify REAL_TARGET_BUSINESS_POOL and is_commercial_business strictly allow 100% commercial companies only."""
+    from agents.client_hunter_agent import is_commercial_business, REAL_TARGET_BUSINESS_POOL
+
+    for item in REAL_TARGET_BUSINESS_POOL:
+        assert is_commercial_business(item["name"], item["website"]), f"Non-commercial item in pool: {item['name']}"
+
+    assert is_commercial_business("Popular Diagnostic Centre Ltd.", "https://www.populardiagnostic.com") is True
+    assert is_commercial_business("Sailor by Epyllion", "https://sailor.clothing") is True
+    assert is_commercial_business("Ministry of Health", "https://mohfw.gov.bd") is False
+    assert is_commercial_business("Charity Foundation", "https://examplefoundation.org") is False
+    assert is_commercial_business("Random Blog", "https://myblog.wordpress.com") is False
+
+
+def test_permanent_subscriber_survives_sqlite_reset(tmp_path: Path):
+    """Verify get_all_daily_subscribers always returns permanent subscriber 6302370142 even on a fresh empty SQLite DB."""
+    from telegram_bot import get_all_daily_subscribers
+    from database.memory import MemoryManager
+
+    fresh_mem = MemoryManager(db_path=tmp_path / "fresh_empty.db")
+    subs = get_all_daily_subscribers(fresh_mem)
+    assert 6302370142 in subs

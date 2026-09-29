@@ -18,19 +18,21 @@ logging.basicConfig(
 logger = logging.getLogger("ServiceManager")
 
 def keep_alive_worker():
-    """Periodically sends an external HTTP request to prevent Render Free tier from spinning down."""
+    """Periodically sends an external HTTP request every 5 minutes to prevent Render Free tier from spinning down."""
     url = os.getenv("RENDER_EXTERNAL_URL") or "https://personal-ai-assistant-eviz.onrender.com"
     health_url = f"{url.rstrip('/')}/_stcore/health"
-    logger.info(f"Keep-alive monitor initialized for {health_url}")
-    time.sleep(60)
+    local_health_url = "http://127.0.0.1:8501/_stcore/health"
+    logger.info(f"Keep-alive monitor initialized (every 5 minutes) for {health_url}")
+    time.sleep(20)
     while True:
-        try:
-            req = urllib.request.Request(health_url, headers={"User-Agent": "RenderKeepAlive/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                logger.info(f"Keep-alive ping sent to {health_url} - Status: {resp.status}")
-        except Exception as e:
-            logger.debug(f"Keep-alive ping note: {e}")
-        time.sleep(540)  # Ping every 9 minutes (Render free tier sleeps after 15 min)
+        for target_url in (local_health_url, health_url):
+            try:
+                req = urllib.request.Request(target_url, headers={"User-Agent": "RenderKeepAlive/2.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    logger.info(f"Keep-alive ping sent to {target_url} - Status: {resp.status}")
+            except Exception as e:
+                logger.debug(f"Keep-alive ping note ({target_url}): {e}")
+        time.sleep(300)  # Ping every 5 minutes (300s) so Render never sleeps
 
 def main():
     if "--test-hunt" in sys.argv:

@@ -252,25 +252,37 @@ REAL_TARGET_BUSINESS_POOL: List[Dict[str, Any]] = [
         "ad_spend_signal": "IELTS, GED, BBA/IBA ও বিদেশে উচ্চশিক্ষার বিজ্ঞাপন নিয়মিত চলছে, কিন্তু ওয়েবসাইটে ২৪/৭ AI Student Counselor ও অটো-অ্যাপয়েন্টমেন্ট ফানেল নেই।",
         "avg_monthly_visitors": 30000,
         "avg_ticket_bdt": 12000
-    },
-    {
-        "name": "As-Sunnah Skill Development Institute (আস-সুন্নাহ স্কিল ডেভেলপমেন্ট ইনস্টিটিউট)",
-        "category": "কারিগরি ও আইটি স্কিল ডেভেলপমেন্ট ইনস্টিটিউট (Skill Development & EdTech Institute)",
-        "location": "Plot 56, Road 3, Block A, Aftabnagar, Badda, Dhaka-1212, Bangladesh",
-        "website": "https://assunnahskill.edu.bd",
-        "facebook": "https://www.facebook.com/assunnahskill",
-        "phone": "+880 9610-001089",
-        "whatsapp_phone": "8809610001089",
-        "email": "info@assunnahskill.edu.bd",
-        "decision_maker": "Shaykh Ahmadullah (Chairman, As-Sunnah Foundation) / Head of Skill Development & Training Operations",
-        "competitor_name": "10 Minute School, Creative IT Institute & Ostad",
-        "competitor_advantage": "শীর্ষ প্রতিদ্বন্দ্বী স্কিল প্ল্যাটফর্মগুলো ওয়েবসাইটে Meta Pixel (`fbq`), Google Analytics (`gtag`), ২৪/৭ AI কোর্স কাউন্সেলর চ্যাটবট এবং ১-ক্লিকে অনলাইন কোর্স এনরোলমেন্ট ও স্টুডেন্ট পোর্টাল ব্যবহার করে হাজারো শিক্ষার্থীকে তাৎক্ষণিক ভর্তি করছে।",
-        "review_pain_points": "শিক্ষার্থী ও অভিভাবকদের প্রধান ভোগান্তি: নতুন ব্যাচের ভর্তি কবে শুরু হবে, আবাসিক স্কলারশিপের শর্ত কী বা কোন কোর্সে কী যোগ্যতা লাগবে তা জানতে হটলাইনে (`+8809610001089`) বা ফেসবুক পেজে মেসেজ দিলে বিপুল চাপে তাৎক্ষণিক উত্তর মেলে না এবং ওয়েবসাইটে কোনো ২৪/৭ AI ভর্তি সহায়ক বট নেই।",
-        "ad_spend_signal": "ফেসবুক পেজে ও আস-সুন্নাহ ফাউন্ডেশনের চ্যানেলে লাখো মানুষের রিচ থাকলেও `assunnahskill.edu.bd` ওয়েবসাইটে Meta Pixel (`fbq`), Google Analytics (`gtag`) এবং অটোমেটেড WhatsApp ভর্তি চ্যাটবট না থাকায় বিশাল সংখ্যক আগ্রহী শিক্ষার্থী ও স্পন্সর ট্র্যাকিংয়ের বাইরে থেকে যাচ্ছে।",
-        "avg_monthly_visitors": 42000,
-        "avg_ticket_bdt": 5000
     }
 ]
+
+# Strict filter to reject Government agencies, Non-Profit/Charity/NGO foundations, and Generic Blogs/Directories
+NON_COMMERCIAL_DOMAIN_SUFFIXES = (
+    ".gov", ".gov.bd", ".mil", ".mil.bd", ".org", ".org.bd", ".edu", ".edu.bd", ".ac.bd"
+)
+
+NON_COMMERCIAL_KEYWORDS = (
+    "wikipedia.org", "youtube.com", "daraz.com", "bikroy.com", "facebook.com",
+    "linkedin.com", "instagram.com", "twitter.com", "x.com", "blogspot.com",
+    "wordpress.com", "medium.com", "substack.com", "prothomalo.com", "thedailystar.net",
+    "bdnews24.com", "jagonews24.com", "kalerkantho.com", "banglatribune.com",
+    "foundation", "charity", "nonprofit", "non-profit", "ngo", "ministry",
+    "government", "welfare", "relief", "donation", "zakat", "sadaqah", "assunnah",
+    "ফাউন্ডেশন", "অলাভজনক", "চ্যারিটি", "মন্ত্রণালয়", "অধিদপ্তর", "সরকারি", "ব্লগ"
+)
+
+
+def is_commercial_business(name: str, url: str, snippet: str = "") -> bool:
+    """Returns True ONLY if the candidate is a 100% commercial business (not a government entity, non-profit, or generic blog)."""
+    domain = ScannedCompanyStore.normalize_domain(url)
+    if not domain:
+        return False
+    if any(domain.endswith(suf) for suf in NON_COMMERCIAL_DOMAIN_SUFFIXES):
+        return False
+    combined = f"{name} {domain} {url} {snippet}".lower()
+    if any(kw in combined for kw in NON_COMMERCIAL_KEYWORDS):
+        return False
+    return True
+
 
 
 class ScannedCompanyStore:
@@ -1048,7 +1060,7 @@ class ClientHunterAgent:
                 snippet = r.get("snippet", "")
                 if not title or not url:
                     continue
-                if any(skip in url.lower() for skip in ["wikipedia.org", "youtube.com", "daraz.com", "bikroy.com", "facebook.com"]):
+                if not is_commercial_business(title, url, snippet):
                     continue
                 if not self.store.is_scanned(title, url):
                     phone_match = re.search(r"(?:\+?880|01)[0-9\- ]{8,13}", snippet)

@@ -13,6 +13,28 @@ SANDBOX_PATH = BASE_DIR / os.getenv("SANDBOX_DIR", "sandbox")
 SANDBOX_PATH.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Persistent Telegram Subscriber & Daily Schedule State Paths (Survives Render restarts)
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SUBSCRIBERS_JSON_PATH = DATA_DIR / "telegram_subscribers.json"
+DAILY_DISPATCH_STATE_PATH = DATA_DIR / "daily_dispatch_state.json"
+
+
+def _build_default_subscriber_chat_ids() -> List[int]:
+    """Builds the permanent list of subscriber Telegram chat_ids (never lost on Render container restarts)."""
+    ids: List[int] = [6302370142]
+    raw_env = os.getenv("TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_SUBSCRIBER_IDS", "")
+    for part in raw_env.replace(";", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            cid = int(part)
+            if cid not in ids:
+                ids.append(cid)
+    return ids
+
+
+DEFAULT_SUBSCRIBER_CHAT_IDS: List[int] = _build_default_subscriber_chat_ids()
+
 # Default LLM Settings (gemini-3.5-flash-lite provides 1,500 req/day quota on Free Tier vs 20 for flash)
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini/gemini-3.5-flash-lite")
 MAX_EVAL_RETRIES = int(os.getenv("MAX_EVAL_RETRIES", "3"))
