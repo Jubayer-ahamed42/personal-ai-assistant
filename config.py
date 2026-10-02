@@ -107,5 +107,34 @@ def is_configured() -> bool:
         os.getenv("GEMINI_API_KEY") or 
         os.getenv("GEMINI_API_KEY_BACKUP") or
         os.getenv("OPENAI_API_KEY") or 
-        os.getenv("ANTHROPIC_API_KEY")
+        os.getenv("ANTHROPIC_API_KEY") or
+        os.getenv("SALES_CLOSER_GEMINI_KEY")
     )
+
+
+# -------------------------------------------------------------
+# Dedicated Sales Assistant Configuration ("Be Smart With AI")
+# Zero collision with main project's API key
+# -------------------------------------------------------------
+SALES_CLOSER_GEMINI_KEY = os.getenv("SALES_CLOSER_GEMINI_KEY", "")
+SALES_MODEL_NAME = os.getenv("SALES_MODEL_NAME", "gemini/gemini-3.5-flash")
+MESSAGE_BUFFER_SECONDS = float(os.getenv("MESSAGE_BUFFER_SECONDS", "7.0"))
+OWNER_TELEGRAM_CHAT_ID = os.getenv("OWNER_TELEGRAM_CHAT_ID", "6302370142")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+CRM_DATA_DIR = DATA_DIR / "crm"
+CRM_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CRM_LEADS_CSV_PATH = CRM_DATA_DIR / "google_sheets_crm_leads.csv"
+CRM_LEADS_JSON_PATH = CRM_DATA_DIR / "crm_leads.json"
+
+
+def get_sales_api_key() -> str:
+    """Returns the dedicated API key for smart_sales_assistant, strictly isolated from the main key."""
+    key = os.getenv("SALES_CLOSER_GEMINI_KEY", "")
+    return key.strip() if key else ""
+
+
+def get_sales_model() -> str:
+    """Returns the sanitized model name for smart_sales_assistant."""
+    raw = os.getenv("SALES_MODEL_NAME", "gemini-3.5-flash")
+    return sanitize_model_name(raw)

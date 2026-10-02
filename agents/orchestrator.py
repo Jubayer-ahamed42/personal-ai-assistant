@@ -13,6 +13,7 @@ from agents.data_agent import DataAgent
 from agents.evaluator_agent import EvaluatorAgent
 from agents.hackathon_agent import HackathonAgent
 from agents.client_hunter_agent import ClientHunterAgent
+from agents.smart_sales_assistant import SmartSalesAssistant
 from tools.tts_tools import text_to_speech_bengali
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class MasterOrchestrator:
         self.data_specialist = DataAgent(model=self.model)
         self.hackathon_specialist = HackathonAgent(model=self.model)
         self.client_hunter = ClientHunterAgent(model=self.model)
+        self.sales_assistant = SmartSalesAssistant()
         self.evaluator = EvaluatorAgent(model=self.model)
 
     def process_command(
@@ -213,13 +215,14 @@ Available Sub-Agents:
 3. "data": For data analysis, metrics tables, math calculations, tabular comparisons.
 4. "hackathon": For finding live/upcoming hackathons (Devpost, Kaggle, Lablab.ai), brainstorming winning project ideas, analyzing judging criteria, creating 24h/48h hackathon roadmaps, pitch decks, and submission READMEs.
 5. "client_hunter": For finding target businesses/clients, running 10-point live website/marketing X-Ray audits (Meta Pixel, Google Analytics, AI Chatbot, speed, SEO, booking), calculating Digital Health Scores & lost revenue in BDT, BDT pricing strategies, and generating high-converting client proposal letters.
+6. "smart_sales": For customer sales conversations, WhatsApp bot interactions, lead qualification, and consultative AI sales for "Be Smart With AI" agency.
 
 Respond ONLY with a JSON object:
 {{
     "summary": "Brief summary of planned execution",
     "subtasks": [
         {{
-            "agent": "research" | "coding" | "data" | "hackathon" | "client_hunter",
+            "agent": "research" | "coding" | "data" | "hackathon" | "client_hunter" | "smart_sales",
             "task_description": "Precise instruction for the specialist"
         }}
     ]
@@ -239,11 +242,12 @@ Respond ONLY with a JSON object:
             if not isinstance(plan, dict) or not isinstance(plan.get("subtasks"), list) or len(plan["subtasks"]) == 0:
                 raise ValueError("Plan missing non-empty subtasks list")
         except Exception:
+            is_sales = any(k in user_command.lower() for k in ["sales", "বিক্রয়", "be smart with ai", "কাস্টমার", "কনসালটেন্ট"])
             is_hunt = any(k in user_command.lower() for k in ["hunt", "client", "xray", "x-ray", "audit", "ক্লায়েন্ট", "ক্লায়েন্ট", "অডিট", "এক্স-রে", "প্রপোজাল", "লিড"])
             is_hack = any(k in user_command.lower() for k in ["hackathon", "হ্যাকাথন", "devpost", "kaggle", "lablab", "প্রতিযোগিতা", "রোডম্যাপ"])
             is_code = any(k in user_command.lower() for k in ["code", "কোড", "python", "পাইথন", "স্ক্রিপ্ট"])
             is_data = any(k in user_command.lower() for k in ["data", "ডাটা", "অ্যানালাইসিস", "analysis"])
-            default_agent = "client_hunter" if is_hunt else ("hackathon" if is_hack else ("coding" if is_code else ("data" if is_data else "research")))
+            default_agent = "smart_sales" if is_sales else ("client_hunter" if is_hunt else ("hackathon" if is_hack else ("coding" if is_code else ("data" if is_data else "research"))))
             plan = {
                 "summary": "সরাসরি সম্পাদন পরিকল্পনা",
                 "subtasks": [{"agent": default_agent, "task_description": user_command}]
@@ -281,6 +285,8 @@ Respond ONLY with a JSON object:
                         sub_output_data = self.hackathon_specialist.run(task_desc, critique=current_critique)
                     elif agent_type == "client_hunter":
                         sub_output_data = self.client_hunter.run(task_desc, critique=current_critique)
+                    elif agent_type == "smart_sales":
+                        sub_output_data = self.sales_assistant.run(task_desc, critique=current_critique)
                     else:
                         sub_output_data = self.researcher.run(task_desc, critique=current_critique)
                 except Exception as e:
@@ -339,10 +345,10 @@ Respond ONLY with a JSON object:
         # Final Synthesis
         notify("synthesis", "চূড়ান্ত নিখুঁত ও পরিমার্জিত রিপোর্ট প্রস্তুত করা হচ্ছে...")
 
-        # If ClientHunter is the sole specialist executed, preserve its exact 10-point X-Ray & Official Signature formatting
+        # If ClientHunter or SmartSales is the sole specialist executed, preserve its exact formatting
         if (
             len(sub_agent_results) == 1
-            and sub_agent_results[0].get("agent_type") == "client_hunter"
+            and sub_agent_results[0].get("agent_type") in ["client_hunter", "smart_sales"]
             and sub_agent_results[0].get("output")
         ):
             final_report = sub_agent_results[0]["output"]
