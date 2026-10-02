@@ -138,3 +138,18 @@ def get_sales_model() -> str:
     """Returns the sanitized model name for smart_sales_assistant."""
     raw = os.getenv("SALES_MODEL_NAME", "gemini-3.5-flash")
     return sanitize_model_name(raw)
+
+
+# -------------------------------------------------------------
+# Official Facebook Page API Configuration ("Be Smart With AI")
+# Source: Ahmad Personal Agent (Agent 1)
+# -------------------------------------------------------------
+FB_PAGE_ID = os.getenv("FB_PAGE_ID", "1347013991822233")
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "")
+FB_APP_ID = os.getenv("FB_APP_ID", "")
+FB_APP_SECRET = os.getenv("FB_APP_SECRET", "")
+
+
+def is_facebook_configured() -> bool:
+    """Returns True if Facebook Page ID and Page Access Token are configured."""
+    return bool(FB_PAGE_ID and FB_PAGE_ACCESS_TOKEN)
